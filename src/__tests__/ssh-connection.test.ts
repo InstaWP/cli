@@ -16,7 +16,7 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-const { spawnInteractiveSsh, execViaSsh, rsyncViaSsh } = await import('../lib/ssh-connection.js');
+const { spawnInteractiveSsh, execViaSsh, execViaSshStreamStdin, rsyncViaSsh } = await import('../lib/ssh-connection.js');
 
 const conn: SshConnection = {
   host: 'test.example.com',
@@ -98,6 +98,45 @@ describe('ssh-connection', () => {
       const result = execViaSsh(conn, 'test');
       expect(result.stdout).toBe('');
       expect(result.stderr).toBe('');
+    });
+  });
+
+  describe('execViaSshStreamStdin', () => {
+    it('passes the command as an ssh arg (not via stdin) so local stdin can stream', () => {
+      mockSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+
+      execViaSshStreamStdin(conn, 'cat > /tmp/f', false);
+
+      const callArgs = mockSpawnSync.mock.calls[0][1] as string[];
+      expect(callArgs[0]).toBe('-T');
+      // command is the LAST argument to ssh
+      expect(callArgs[callArgs.length - 1]).toBe('cat > /tmp/f');
+      // and is NOT delivered via stdin input
+      const opts = mockSpawnSync.mock.calls[0][2];
+      expect(opts.input).toBeUndefined();
+    });
+
+    it('inherits all stdio in text mode (capture=false) for binary-safe passthrough', () => {
+      mockSpawnSync.mockReturnValue({ status: 0 });
+      execViaSshStreamStdin(conn, 'tar xzf -', false);
+      const opts = mockSpawnSync.mock.calls[0][2];
+      expect(opts.stdio).toBe('inherit');
+    });
+
+    it('inherits stdin but captures stdout/stderr in JSON mode (capture=true)', () => {
+      mockSpawnSync.mockReturnValue({ status: 0, stdout: 'ok', stderr: '' });
+      const result = execViaSshStreamStdin(conn, 'whoami', true);
+      const opts = mockSpawnSync.mock.calls[0][2];
+      expect(opts.stdio).toEqual(['inherit', 'pipe', 'pipe']);
+      expect(result.stdout).toBe('ok');
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('propagates a non-zero exit code (and null → 1)', () => {
+      mockSpawnSync.mockReturnValue({ status: 255 });
+      expect(execViaSshStreamStdin(conn, 'x', false).exitCode).toBe(255);
+      mockSpawnSync.mockReturnValue({ status: null });
+      expect(execViaSshStreamStdin(conn, 'x', false).exitCode).toBe(1);
     });
   });
 

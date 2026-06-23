@@ -15,6 +15,7 @@ These address feedback from a real LocalWP → cloud "mirror overwrite" workflow
 - **`versions create`** now echoes the restore/list hint using the same site identifier you typed (no more short-name in, FQDN out).
 - `db push --search-replace` now **skips the `guid` column** (WP best practice — post GUIDs are permanent identifiers, not links); same applied to `local push --with-db`.
 - `db push` success summary prints readable `rewrote_prefix` / `search_replaced` lines (`from -> to`) instead of `[object Object]`.
+- **`exec --stdin`** streams local stdin to the remote command (uploads, restore pipes, `tar … | exec --stdin 'tar xzf -'`) — closes the last gap from the feedback. It passes the command as an ssh argument so stdin is free to stream; the non-login remote shell it uses also means no MOTD on that path.
 
 ## 0.0.1-beta.23 (2026-06-15)
 
