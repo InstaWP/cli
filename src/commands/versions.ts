@@ -127,7 +127,7 @@ export function registerVersionsCommand(program: Command): void {
           console.log(JSON.stringify({ success: true, data: { id: versionId, status: 'progress', task_id: taskId ?? null } }));
         } else {
           success('Version started', { id: versionId, status: 'progress' });
-          info('It will be restorable once complete. Check with: instawp versions list ' + label);
+          info('It will be restorable once complete. Check with: instawp versions list ' + siteIdentifier);
         }
         return;
       }
@@ -135,7 +135,7 @@ export function registerVersionsCommand(program: Command): void {
       if (taskId) {
         const result = await pollTask(client, taskId, 'Creating version');
         if (result !== 'completed') {
-          info(`Version (ID ${versionId}) is still processing. Check with: instawp versions list ${label}`);
+          info(`Version (ID ${versionId}) is still processing. Check with: instawp versions list ${siteIdentifier}`);
           process.exit(result === 'error' ? 1 : 0);
         }
       }
@@ -144,7 +144,7 @@ export function registerVersionsCommand(program: Command): void {
         console.log(JSON.stringify({ success: true, data: { id: versionId, status: 'completed', name: versionName || null } }));
       } else {
         success('Version ready', { id: versionId, ...(versionName ? { name: versionName } : {}) });
-        info(`Roll back any time with: instawp versions restore ${label} ${versionId}`);
+        info(`Roll back any time with: instawp versions restore ${siteIdentifier} ${versionId}`);
       }
     });
 
