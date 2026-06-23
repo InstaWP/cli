@@ -26,6 +26,30 @@ export function toRsyncPath(p: string): string {
 }
 
 /**
+ * Resolve the remote sync target for a site. Defaults to the site's
+ * `wp-content/`, but `--webroot` targets `public_html/` and `--remote-path <p>`
+ * targets an explicit path (absolute, or relative to `public_html/`). Always
+ * returns a trailing slash so rsync/SFTP treat it as a directory.
+ */
+export function buildRemotePath(
+  conn: { username: string; domain: string },
+  opts: { remotePath?: string; webroot?: boolean } = {},
+): string {
+  const webrootBase = `/home/${conn.username}/web/${conn.domain}/public_html`;
+  let p: string;
+  if (opts.remotePath) {
+    p = opts.remotePath.startsWith('/')
+      ? opts.remotePath
+      : `${webrootBase}/${opts.remotePath.replace(/^\.?\//, '')}`;
+  } else if (opts.webroot) {
+    p = webrootBase;
+  } else {
+    p = `${webrootBase}/wp-content`;
+  }
+  return p.endsWith('/') ? p : p + '/';
+}
+
+/**
  * Resolve a path inside the CLI's installed directory (e.g. bundled scripts).
  *
  * `new URL(import.meta.url).pathname` returns `/C:/...` on Windows which is

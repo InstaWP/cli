@@ -968,7 +968,7 @@ async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnect
     if (isShellSafeUrl(fromUrl) && isShellSafeUrl(toUrl)) {
       const srSpin = spinner(`Rewriting URLs (${fromUrl} → ${toUrl})...`);
       srSpin.start();
-      const srRes = execViaSsh(conn, `cd ${wpPath} && wp search-replace '${fromUrl}' '${toUrl}' --all-tables --report-changed-only`);
+      const srRes = execViaSsh(conn, `cd ${wpPath} && wp search-replace '${fromUrl}' '${toUrl}' --all-tables --skip-columns=guid --report-changed-only`);
       if (srRes.exitCode !== 0) {
         srSpin.fail('URL rewrite failed (DB imported; run search-replace manually if links are wrong)');
         if (srRes.stderr) error(srRes.stderr.trim());

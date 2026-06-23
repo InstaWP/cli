@@ -83,6 +83,34 @@ export function execViaSsh(conn: SshConnection, command: string): { stdout: stri
 }
 
 /**
+ * Execute a command via SSH while streaming the local process's stdin to the
+ * remote command (the way `ssh host cmd` does). Unlike execViaSsh — which
+ * delivers the command over stdin and therefore can't also forward piped data —
+ * this passes the command as an ssh argument, leaving stdin free to stream.
+ *
+ * Side effect: the remote runs a non-login shell (`$SHELL -c <cmd>`), so it does
+ * NOT print the login banner/MOTD. `capture` controls output handling: when
+ * false (text mode) stdout/stderr are inherited for real-time, binary-safe
+ * passthrough; when true (JSON mode) they're captured and returned.
+ */
+export function execViaSshStreamStdin(
+  conn: SshConnection,
+  command: string,
+  capture: boolean,
+): { stdout: string; stderr: string; exitCode: number } {
+  const result = spawnSync('ssh', ['-T', ...sshArgs(conn), sshTarget(conn), command], {
+    stdio: capture ? ['inherit', 'pipe', 'pipe'] : 'inherit',
+    encoding: capture ? 'utf-8' : undefined,
+    maxBuffer: 500 * 1024 * 1024,
+  });
+  return {
+    stdout: capture ? ((result.stdout as string) || '') : '',
+    stderr: capture ? ((result.stderr as string) || '') : '',
+    exitCode: result.status ?? 1,
+  };
+}
+
+/**
  * Execute a command via SSH and stream stdout directly to a file.
  * Useful for large outputs like database dumps.
  */

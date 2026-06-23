@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.0.1-beta.24 (2026-06-23)
+
+### Added — db push prefix-safety, URL remap, sync mirroring & webroot, exec shell
+
+These address feedback from a real LocalWP → cloud "mirror overwrite" workflow.
+
+- **`db push` now detects a table-prefix mismatch** (e.g. a `wp_` dump pushed to an `iwpa4c7_` site) instead of silently importing orphan tables the site never reads. It warns loudly and offers to rewrite; pass **`--rewrite-prefix`** to remap the dump's table identifiers non-interactively. Rewriting also remaps the prefix-bound role/capability keys (`{prefix}capabilities`, `{prefix}user_level`, `{prefix}user_roles`) after import so admin login survives.
+- **`db push --search-replace <from> <to>`** runs a serialization-safe `wp search-replace` across all tables right after import — the near-universal next step after a cross-domain push.
+- **`instawp wp`/`exec` no longer leak the server login banner/MOTD** into command stdout (or the `--json` payload). Output is now exactly the command's output, so `--field`, `--format=count`, and value capture are clean.
+- **`exec --shell '<cmdline>'`** runs the arguments as one shell command line on the remote (enables pipes, `;`, `>`, globs). The misleading `-- ps aux | grep php` help example (which actually piped locally) is fixed.
+- **`sync push/pull --delete`** makes the remote/local a true mirror (removes extraneous files), guarded by a confirmation prompt (skip with `--yes`; preview with `--dry-run`). Additive remains the default. Not supported on Windows (SFTP transport).
+- **`sync push/pull --remote-path <path>` / `--webroot`** transfer files outside `wp-content/` (e.g. webroot-level `ABSPATH/variations/`).
+- **`versions create`** now echoes the restore/list hint using the same site identifier you typed (no more short-name in, FQDN out).
+- `db push --search-replace` now **skips the `guid` column** (WP best practice — post GUIDs are permanent identifiers, not links); same applied to `local push --with-db`.
+- `db push` success summary prints readable `rewrote_prefix` / `search_replaced` lines (`from -> to`) instead of `[object Object]`.
+- **`exec --stdin`** streams local stdin to the remote command (uploads, restore pipes, `tar … | exec --stdin 'tar xzf -'`) — closes the last gap from the feedback. It passes the command as an ssh argument so stdin is free to stream; the non-login remote shell it uses also means no MOTD on that path.
+
 ## 0.0.1-beta.23 (2026-06-15)
 
 ### Added — update notifier + `instawp upgrade`

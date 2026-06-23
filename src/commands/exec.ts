@@ -1,26 +1,19 @@
 import { Command } from 'commander';
+import { randomBytes } from 'node:crypto';
 import { requireAuth, getClient } from '../lib/api.js';
 import { resolveSite } from '../lib/site-resolver.js';
 import { ensureSshAccess } from '../lib/ssh-keys.js';
-import { execViaSsh } from '../lib/ssh-connection.js';
+import { execViaSsh, execViaSshStreamStdin } from '../lib/ssh-connection.js';
+import { buildRemoteCommandString, sliceAfterMarker } from '../lib/remote-command.js';
 import { error, spinner, isJsonMode } from '../lib/output.js';
 
-// POSIX shell single-quote escape: 'safe' becomes 'safe' (passthrough for
-// shell-safe chars), anything else wrapped in '...' with embedded ' → '\''.
-// Required because the remote shell receives joined args via stdin and would
-// otherwise interpret parens, quotes, semicolons, etc. (broke `wp eval '...'`).
-function shellQuote(arg: string): string {
-  if (arg === '') return "''";
-  if (/^[a-zA-Z0-9_\-./=:@%+,]+$/.test(arg)) return arg;
-  return "'" + arg.replace(/'/g, "'\\''") + "'";
-}
-
-function joinForRemote(args: string[]): string {
-  return args.map(shellQuote).join(' ');
-}
-
-async function execAction(siteIdentifier: string, args: string[], opts: { api?: boolean; timeout?: string }): Promise<void> {
+async function execAction(siteIdentifier: string, args: string[], opts: { api?: boolean; timeout?: string; shell?: boolean; stdin?: boolean }): Promise<void> {
   requireAuth();
+
+  if (opts.stdin && opts.api) {
+    error('--stdin is only supported with the SSH transport (not --api)');
+    process.exit(1);
+  }
 
   // Drop POSIX `--` end-of-options marker so users can write
   //   instawp wp <site> -- post list --post_type=page
@@ -44,12 +37,12 @@ async function execAction(siteIdentifier: string, args: string[], opts: { api?: 
     process.exit(1);
   }
 
-  const command = joinForRemote(args);
+  const command = buildRemoteCommandString(args, !!opts.shell);
 
   if (opts.api) {
     await execViaApi(site, command, opts);
   } else {
-    await execViaSshTransport(site, command);
+    await execViaSshTransport(site, command, { streamStdin: !!opts.stdin });
   }
 }
 
@@ -97,27 +90,51 @@ async function execViaApi(site: any, command: string, opts: { timeout?: string }
   }
 }
 
-async function execViaSshTransport(site: any, command: string): Promise<void> {
+async function execViaSshTransport(site: any, command: string, opts: { streamStdin?: boolean } = {}): Promise<void> {
   const conn = await ensureSshAccess(site.id);
 
   // Auto-cd into WordPress root so wp-cli and other tools work out of the box
   const wpRoot = conn.domain
     ? `/home/${conn.username}/web/${conn.domain}/public_html`
     : '';
-  const fullCmd = wpRoot ? `cd ${wpRoot} && ${command}` : command;
-  const result = execViaSsh(conn, fullCmd);
+  const base = wpRoot ? `cd ${wpRoot} && ${command}` : command;
+
+  // --stdin: stream local stdin to the remote command (uploads, restore pipes,
+  // `tar … | … 'tar xzf -'`). Passes the command as an ssh arg so stdin is free;
+  // the non-login remote shell also means no MOTD, so no marker stripping needed.
+  if (opts.streamStdin) {
+    const capture = isJsonMode();
+    const result = execViaSshStreamStdin(conn, base, capture);
+    if (isJsonMode()) {
+      console.log(JSON.stringify({
+        success: result.exitCode === 0,
+        data: { stdout: result.stdout, stderr: result.stderr, exit_code: result.exitCode },
+      }));
+    }
+    // In text mode stdout/stderr were inherited (already streamed live).
+    process.exit(result.exitCode);
+  }
+
+  // The remote login shell prepends a banner/MOTD to stdout on a cold (cold/idle)
+  // connection, which pollutes value capture (`--field`, `--format=count`) and
+  // the `--json` payload. Emit a unique marker before the real command, then
+  // slice stdout after it so only the command's own output is returned. Exit
+  // code is unaffected (the marker printf is a separate statement before `base`).
+  const marker = `__IWP_OUT_${randomBytes(6).toString('hex')}__`;
+  const result = execViaSsh(conn, `printf '%s\\n' '${marker}'; ${base}`);
+  const stdout = sliceAfterMarker(result.stdout, marker);
 
   if (isJsonMode()) {
     console.log(JSON.stringify({
       success: result.exitCode === 0,
       data: {
-        stdout: result.stdout,
+        stdout,
         stderr: result.stderr,
         exit_code: result.exitCode,
       },
     }));
   } else {
-    if (result.stdout) process.stdout.write(result.stdout);
+    if (stdout) process.stdout.write(stdout);
     if (result.stderr) process.stderr.write(result.stderr);
   }
 
@@ -131,24 +148,36 @@ export function registerExecCommand(program: Command): void {
     .passThroughOptions()
     .allowUnknownOption()
     .option('--api', 'Use API transport instead of SSH')
+    .option('--shell', 'Run the args as one shell command line on the remote (enables pipes, ;, >, globs)')
+    .option('--stdin', 'Stream local stdin to the remote command (for uploads / restore pipes; SSH only)')
     .option('--timeout <seconds>', 'Command timeout in seconds (API mode only)', '30')
     .addHelpText('after', `
 Examples:
   $ instawp exec my-site ls -la
-  $ instawp exec my-site -- ps aux | grep php   # use -- to forward raw args
+  $ instawp exec my-site -- tail -n 50 wp-content/debug.log
+  $ instawp exec my-site --shell 'ps aux | grep php'   # --shell runs the whole line on the remote
+  $ printf 'data' | instawp exec my-site --stdin --shell 'cat > /tmp/f'   # --stdin pipes stdin to the remote
   $ instawp exec my-site php -v --api
+
+Note: shell metacharacters (| ; > globs) are NOT interpreted by default — each
+arg is sent as one literal token. Use --shell (or '-- bash -lc "..."') to run a
+pipeline or compound command on the remote.
 `)
     .action(async (siteIdentifier: string, args: string[], opts) => {
-      // passThroughOptions may swallow --api/--timeout into args — extract them
+      // passThroughOptions may swallow --api/--shell/--stdin/--timeout into args — extract them
       const extractedApi = args.includes('--api');
+      const extractedShell = args.includes('--shell');
+      const extractedStdin = args.includes('--stdin');
       const timeoutIdx = args.indexOf('--timeout');
       let extractedTimeout: string | undefined;
       if (timeoutIdx !== -1 && args[timeoutIdx + 1]) {
         extractedTimeout = args[timeoutIdx + 1];
         args = args.filter((_, i) => i !== timeoutIdx && i !== timeoutIdx + 1);
       }
-      args = args.filter(a => a !== '--api');
+      args = args.filter(a => a !== '--api' && a !== '--shell' && a !== '--stdin');
       if (extractedApi) opts.api = true;
+      if (extractedShell) opts.shell = true;
+      if (extractedStdin) opts.stdin = true;
       if (extractedTimeout) opts.timeout = extractedTimeout;
       await execAction(siteIdentifier, args, opts);
     });
