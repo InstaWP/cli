@@ -135,7 +135,7 @@ export function registerDbCommand(program: Command): void {
     .option('--force', 'Skip confirmation prompt')
     .option('--no-backup', 'Skip taking a remote backup before overwrite (DANGEROUS)')
     .option('--rewrite-prefix', "Rewrite the dump's table prefix to match the remote site's prefix (e.g. wp_ → iwpa4c7_)")
-    .option('--search-replace <from-to...>', 'After import, run wp search-replace <from> <to> across all tables (serialization-safe). Pass exactly two URLs.')
+    .option('--search-replace <from-to...>', 'After import, run wp search-replace <from> <to> across all tables (serialization-safe, skips guid). Pass exactly two URLs.')
     .addHelpText('after', `
 Notes:
   - Always takes a remote backup first unless --no-backup is passed.
@@ -393,10 +393,12 @@ Examples:
       }
 
       // Step 4c: Optional URL search-replace (serialization-safe, server-side).
+      // Skip `guid` — post GUIDs are permanent identifiers, not links, and WP
+      // best practice is to never rewrite them on a domain change.
       if (srFrom && srTo) {
         const srSpin = spinner(`Rewriting URLs (${srFrom} -> ${srTo})...`);
         srSpin.start();
-        const srRes = execViaSsh(conn, `cd ${wpPath} && wp search-replace '${srFrom}' '${srTo}' --all-tables --report-changed-only`);
+        const srRes = execViaSsh(conn, `cd ${wpPath} && wp search-replace '${srFrom}' '${srTo}' --all-tables --skip-columns=guid --report-changed-only`);
         if (srRes.exitCode === 0) {
           srSpin.succeed('URLs rewritten');
           if (!isJsonMode() && srRes.stdout.trim()) console.log(srRes.stdout.trim());
@@ -421,8 +423,8 @@ Examples:
         backup_path: takeBackup ? backupRemotePath : null,
         restored_from: file,
         size_bytes: localSize,
-        rewrote_prefix: remapFromPrefix ? { from: remapFromPrefix, to: remotePrefix } : null,
-        search_replaced: srFrom && srTo ? { from: srFrom, to: srTo } : null,
+        rewrote_prefix: remapFromPrefix ? `${remapFromPrefix} -> ${remotePrefix}` : null,
+        search_replaced: srFrom && srTo ? `${srFrom} -> ${srTo}` : null,
       });
 
       if (!isJsonMode() && takeBackup) {

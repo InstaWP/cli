@@ -13,6 +13,8 @@ These address feedback from a real LocalWP → cloud "mirror overwrite" workflow
 - **`sync push/pull --delete`** makes the remote/local a true mirror (removes extraneous files), guarded by a confirmation prompt (skip with `--yes`; preview with `--dry-run`). Additive remains the default. Not supported on Windows (SFTP transport).
 - **`sync push/pull --remote-path <path>` / `--webroot`** transfer files outside `wp-content/` (e.g. webroot-level `ABSPATH/variations/`).
 - **`versions create`** now echoes the restore/list hint using the same site identifier you typed (no more short-name in, FQDN out).
+- `db push --search-replace` now **skips the `guid` column** (WP best practice — post GUIDs are permanent identifiers, not links); same applied to `local push --with-db`.
+- `db push` success summary prints readable `rewrote_prefix` / `search_replaced` lines (`from -> to`) instead of `[object Object]`.
 
 ## 0.0.1-beta.23 (2026-06-15)
 
