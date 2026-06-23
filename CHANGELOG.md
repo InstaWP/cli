@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.1-beta.24 (2026-06-23)
 
 ### Added — db push prefix-safety, URL remap, sync mirroring & webroot, exec shell
 
