@@ -132,10 +132,27 @@ describe('output', () => {
       s.stop();
     });
 
-    it('returns an ora spinner in human mode', () => {
+    it('returns a working spinner in human mode', () => {
       const s = spinner('Loading...');
       expect(s.start).toBeTypeOf('function');
       expect(s.succeed).toBeTypeOf('function');
+    });
+
+    it('emits a phase marker to stderr in non-TTY mode (heartbeat for long ops)', () => {
+      // The vitest runner is non-TTY, so spinner() returns the marker stub.
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      spinner('Uploading...').start();
+      expect(spy).toHaveBeenCalled();
+      expect(spy.mock.calls[0][0]).toContain('Uploading...');
+    });
+
+    it('emits no marker in json mode (machine output stays clean)', () => {
+      setJsonMode(true);
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const s = spinner('Uploading...');
+      s.start();
+      s.succeed('done');
+      expect(spy).not.toHaveBeenCalled();
     });
   });
 });

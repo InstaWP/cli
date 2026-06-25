@@ -40,6 +40,7 @@ function sshTarget(conn: SshConnection): string {
 function scpArgs(conn: SshConnection): string[] {
   ensureKnownHosts();
   return [
+    '-C', // compress in transit — SQL dumps compress ~5–10×; near-free on already-compressed inputs
     '-i', conn.privateKeyPath,
     '-P', String(conn.port),
     '-o', 'StrictHostKeyChecking=accept-new',

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.1-beta.25 (2026-06-25)
+
+### Improved — db push transport & progress (large-DB path)
+
+From round-3 feedback (a 166 MB full-parity push — the transform logic held; transport/progress needed polish):
+
+- **`db push` compresses the dump in transit** — scp now uses `-C` (SQL compresses ~5–10×), cutting upload time on large dumps. (#13)
+- **Non-interactive runs show progress** — when stdout isn't a TTY (pipe / CI / background), each phase prints a one-line marker to **stderr** (Backing up… / Uploading… / Importing… / Rewriting URLs…) instead of going silent until the final summary. (#14)
+- **`db push` summary reports timing** — adds an `elapsed: 144s (1.2 MB/s)` line. (#15)
+
 ## 0.0.1-beta.24 (2026-06-23)
 
 ### Added — db push prefix-safety, URL remap, sync mirroring & webroot, exec shell

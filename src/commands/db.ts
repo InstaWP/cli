@@ -221,6 +221,9 @@ Examples:
         }
       }
 
+      // Start the clock once the actual work begins (excludes prompt think-time).
+      const startedAt = Date.now();
+
       // Step 1: Backup
       if (takeBackup) {
         const backupSpin = spinner(`Backing up remote database to ~/${backupFilename}...`);
@@ -418,6 +421,10 @@ Examples:
         cleanupSpin.succeed('Cleanup complete');
       }
 
+      const elapsedSec = (Date.now() - startedAt) / 1000;
+      const rate = elapsedSec > 0 ? `${formatBytes(localSize / elapsedSec)}/s` : 'n/a';
+      const elapsedStr = `${elapsedSec < 10 ? elapsedSec.toFixed(1) : Math.round(elapsedSec)}s (${rate})`;
+
       success('Push complete', {
         site_id: site.id,
         backup_path: takeBackup ? backupRemotePath : null,
@@ -425,6 +432,7 @@ Examples:
         size_bytes: localSize,
         rewrote_prefix: remapFromPrefix ? `${remapFromPrefix} -> ${remotePrefix}` : null,
         search_replaced: srFrom && srTo ? `${srFrom} -> ${srTo}` : null,
+        elapsed: elapsedStr,
       });
 
       if (!isJsonMode() && takeBackup) {

@@ -57,20 +57,32 @@ export function table(headers: string[], rows: Record<string, any>[]): void {
   console.log(t.toString());
 }
 
-function shouldSuppressSpinner(): boolean {
-  if (jsonMode) return true;
-  if (!process.stdout.isTTY) return true;
-  if (process.env.CI) return true;
-  if (process.env.INSTAWP_QUIET) return true;
-  if (process.env.NO_COLOR) return true;
-  return false;
+/** Truly silent: machine output (--json) or an explicit quiet request. */
+function spinnerSilent(): boolean {
+  return jsonMode || !!process.env.INSTAWP_QUIET;
 }
 
 export function spinner(text: string): Ora | { text: string; start: () => any; succeed: (t?: string) => void; fail: (t?: string) => void; stop: () => void } {
-  if (shouldSuppressSpinner()) {
+  if (spinnerSilent()) {
     return { text: '', start() { return this; }, succeed() {}, fail() {}, stop() {} };
   }
-  return ora(text);
+
+  // Animated spinner only on an interactive TTY (and when colors aren't disabled).
+  if (process.stdout.isTTY && !process.env.CI && !process.env.NO_COLOR) {
+    return ora(text);
+  }
+
+  // Non-interactive (pipe / CI / redirected / NO_COLOR): no animation, but emit
+  // one-line phase markers to STDERR so long operations show a heartbeat instead
+  // of going silent (e.g. a 144s db push looked hung). stderr keeps stdout/the
+  // final summary clean for capture. ora itself writes to stderr, so this matches.
+  return {
+    text,
+    start() { console.error(chalk.cyan('→') + ' ' + this.text); return this; },
+    succeed(t?: string) { console.error(chalk.green('✓') + ' ' + (t || this.text)); },
+    fail(t?: string) { console.error(chalk.red('✗') + ' ' + (t || this.text)); },
+    stop() {},
+  };
 }
 
 export function info(msg: string): void {
