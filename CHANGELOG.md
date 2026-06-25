@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.1-beta.25 (2026-06-25)
 
 ### Improved — db push transport & progress (large-DB path)
 
