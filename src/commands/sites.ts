@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import { requireAuth, getClient } from '../lib/api.js';
 import { getApiUrl } from '../lib/config.js';
 import { resolveSite } from '../lib/site-resolver.js';
+import { waitForHttp } from '../lib/http-ready.js';
 import { success, error, table, spinner, info, isJsonMode } from '../lib/output.js';
 
 export function registerSitesCommand(program: Command): void {
@@ -390,30 +391,6 @@ export function registerSitesCommand(program: Command): void {
     });
 }
 
-/**
- * Poll a URL until it answers (any HTTP status = DNS resolved + server up), or
- * the budget runs out. A fresh site's DNS/edge lags task completion by 30–120s,
- * so without this "Ready" lies and callers hand-roll curl-retry gates.
- */
-async function waitForHttp(url: string, maxMs: number): Promise<boolean> {
-  const deadline = Date.now() + Math.min(Math.max(maxMs, 0), 180000);
-  while (Date.now() < deadline) {
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      try {
-        await fetch(url, { signal: ctrl.signal, redirect: 'follow' });
-        return true; // any HTTP response means it's reachable
-      } finally {
-        clearTimeout(timer);
-      }
-    } catch {
-      // DNS/connection not ready yet — back off and retry.
-    }
-    await new Promise((r) => setTimeout(r, 3000));
-  }
-  return false;
-}
 
 // Shared create action used by both `sites create` and top-level `create`
 async function createSiteAction(opts: any): Promise<void> {

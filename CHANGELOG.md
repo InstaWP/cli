@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.0.1-beta.25 (2026-06-25)
+## Unreleased
+
+### Added — db push readiness/scoping + backup retention (large-DB feedback #16)
+
+- **`db push --verify`** polls the site URL until it answers HTTP after the import (a large import can briefly return `000` right after import/flush); reported as `verified` in the summary.
+- **`db push --sr-tables <table...>`** scopes `--search-replace` to specific (prefixed) tables instead of all tables — faster on big DBs whose bulk rows have no URLs. Default stays `--all-tables`.
+- **`db backups list <site>`** and **`db backups prune <site> [--keep <n>] [--older-than <days>] [--force]`** manage the `~/db-backup-*.sql.gz` files `db push` leaves behind (they previously accumulated with no way to view/clean them).
+- Internal: extracted the HTTP-readiness helper to `lib/http-ready.ts` (now shared by `sites create` and `db push --verify`).
 
 ### Improved — db push transport & progress (large-DB path)
 

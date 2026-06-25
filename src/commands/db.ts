@@ -11,7 +11,10 @@ import { ensureSshAccess } from '../lib/ssh-keys.js';
 import { execViaSsh, execViaSshToFile, scpUpload } from '../lib/ssh-connection.js';
 import { parseTablePrefix } from '../lib/local-instance.js';
 import { detectDumpPrefix, readSqlHead, rewriteDumpPrefix } from '../lib/sql-dump.js';
-import { success, error, spinner, info, isJsonMode } from '../lib/output.js';
+import { waitForHttp } from '../lib/http-ready.js';
+import { parseBackupList, selectBackupsToPrune, type RemoteBackup } from '../lib/db-backups.js';
+import { success, error, spinner, info, table, isJsonMode } from '../lib/output.js';
+import type { SshConnection } from '../types.js';
 
 /** Timestamp like `2026-05-23T12-34-56` (filename-safe — `:` is illegal on Windows). */
 function isoTimestamp(): string {
@@ -48,6 +51,31 @@ async function promptYesNo(question: string, defaultYes = false): Promise<boolea
 /** True if a URL is a plain http(s) URL safe to embed in a single-quoted shell arg. */
 function isShellSafeUrl(u: string): boolean {
   return /^https?:\/\/[^\s'"\\$`]+$/.test(u);
+}
+
+/** Resolve a site and open an SSH connection (shared by the backups subcommands). */
+async function resolveAndConnect(siteIdentifier: string): Promise<{ site: any; conn: SshConnection }> {
+  const rspin = spinner('Resolving site...');
+  rspin.start();
+  let site: any;
+  try {
+    site = await resolveSite(siteIdentifier);
+    rspin.succeed(`Site: ${site.name || site.sub_domain} (ID: ${site.id})`);
+  } catch {
+    rspin.fail('Site resolution failed');
+    process.exit(1);
+  }
+  const conn = await ensureSshAccess(site.id);
+  return { site, conn };
+}
+
+/** List `~/db-backup-*.sql.gz` on the remote (the files `db push` writes), newest first. */
+function listRemoteBackups(conn: SshConnection): RemoteBackup[] {
+  // GNU stat interprets the \t escapes; the for-loop guard avoids a literal glob
+  // when nothing matches. parseBackupList tolerates any MOTD/banner lines.
+  const cmd = `for f in ~/db-backup-*.sql.gz; do [ -e "$f" ] && stat -c '%n\\t%s\\t%Y' "$f"; done`;
+  const res = execViaSsh(conn, cmd);
+  return parseBackupList(res.stdout || '');
 }
 
 export function registerDbCommand(program: Command): void {
@@ -136,6 +164,8 @@ export function registerDbCommand(program: Command): void {
     .option('--no-backup', 'Skip taking a remote backup before overwrite (DANGEROUS)')
     .option('--rewrite-prefix', "Rewrite the dump's table prefix to match the remote site's prefix (e.g. wp_ → iwpa4c7_)")
     .option('--search-replace <from-to...>', 'After import, run wp search-replace <from> <to> across all tables (serialization-safe, skips guid). Pass exactly two URLs.')
+    .option('--sr-tables <table...>', 'Scope --search-replace to these (prefixed) tables instead of all tables — faster on big DBs whose bulk has no URLs')
+    .option('--verify', 'After import, poll the site URL until it responds (large imports can briefly return 000)')
     .addHelpText('after', `
 Notes:
   - Always takes a remote backup first unless --no-backup is passed.
@@ -146,10 +176,13 @@ Notes:
   - URLs: after a cross-domain push, remap URLs with:
       --search-replace <old-url> <new-url>
     (or run 'instawp wp <site> search-replace <old-url> <new-url>' yourself).
+    --search-replace scans all tables by default; pass --sr-tables to limit it.
+  - --verify confirms the site answers HTTP after the import (reported in the summary).
 
 Examples:
-  $ instawp db push my-site dump.sql --rewrite-prefix
+  $ instawp db push my-site dump.sql --rewrite-prefix --verify
   $ instawp db push my-site dump.sql --search-replace http://localhost:10115 https://my-site.instawp.site
+  $ instawp db push my-site dump.sql --search-replace http://old https://new --sr-tables iwpa4c7_options iwpa4c7_posts iwpa4c7_postmeta
 `)
     .action(async (siteIdentifier: string, file: string, opts: any) => {
       requireAuth();
@@ -177,6 +210,20 @@ Examples:
         [srFrom, srTo] = vals;
         if (!isShellSafeUrl(srFrom!) || !isShellSafeUrl(srTo!)) {
           error('--search-replace URLs must be plain http(s) URLs (no spaces, quotes, or shell metacharacters)');
+          process.exit(1);
+        }
+      }
+
+      // Parse/validate --sr-tables (table names go into a shell command — keep identifier-safe)
+      const srTables: string[] = Array.isArray(opts.srTables) ? opts.srTables : [];
+      if (srTables.length) {
+        const bad = srTables.filter((t) => !/^[A-Za-z0-9_]+$/.test(t));
+        if (bad.length) {
+          error(`--sr-tables: invalid table name(s): ${bad.join(', ')} (use plain prefixed table names)`);
+          process.exit(1);
+        }
+        if (!srFrom) {
+          error('--sr-tables only applies with --search-replace');
           process.exit(1);
         }
       }
@@ -399,9 +446,11 @@ Examples:
       // Skip `guid` — post GUIDs are permanent identifiers, not links, and WP
       // best practice is to never rewrite them on a domain change.
       if (srFrom && srTo) {
+        // Scope: explicit (prefixed) tables if --sr-tables given, else all tables.
+        const scope = srTables.length ? srTables.join(' ') : '--all-tables';
         const srSpin = spinner(`Rewriting URLs (${srFrom} -> ${srTo})...`);
         srSpin.start();
-        const srRes = execViaSsh(conn, `cd ${wpPath} && wp search-replace '${srFrom}' '${srTo}' --all-tables --skip-columns=guid --report-changed-only`);
+        const srRes = execViaSsh(conn, `cd ${wpPath} && wp search-replace '${srFrom}' '${srTo}' ${scope} --skip-columns=guid --report-changed-only`);
         if (srRes.exitCode === 0) {
           srSpin.succeed('URLs rewritten');
           if (!isJsonMode() && srRes.stdout.trim()) console.log(srRes.stdout.trim());
@@ -421,6 +470,18 @@ Examples:
         cleanupSpin.succeed('Cleanup complete');
       }
 
+      // Step 6: Optional readiness check. A large import can briefly leave the
+      // site returning 000 right after import/flush; poll until it answers.
+      let verified: string | null = null;
+      if (opts.verify) {
+        const siteUrl = String(site.url || `https://${conn.domain}`).replace(/\/+$/, '');
+        const vSpin = spinner(`Verifying ${siteUrl} responds...`);
+        vSpin.start();
+        const ok = await waitForHttp(siteUrl, 90000);
+        if (ok) { vSpin.succeed('Site is responding'); verified = 'ok'; }
+        else { vSpin.fail('Site did not respond within 90s (large imports can need a moment to warm up)'); verified = 'timeout'; }
+      }
+
       const elapsedSec = (Date.now() - startedAt) / 1000;
       const rate = elapsedSec > 0 ? `${formatBytes(localSize / elapsedSec)}/s` : 'n/a';
       const elapsedStr = `${elapsedSec < 10 ? elapsedSec.toFixed(1) : Math.round(elapsedSec)}s (${rate})`;
@@ -433,10 +494,97 @@ Examples:
         rewrote_prefix: remapFromPrefix ? `${remapFromPrefix} -> ${remotePrefix}` : null,
         search_replaced: srFrom && srTo ? `${srFrom} -> ${srTo}` : null,
         elapsed: elapsedStr,
+        ...(verified ? { verified } : {}),
       });
 
       if (!isJsonMode() && takeBackup) {
         console.log(`\n  ${chalk.dim('Backup:')} ~/${backupFilename} ${chalk.dim('(on remote)')}`);
       }
+    });
+
+  // db backups list/prune <site> — manage the ~/db-backup-*.sql.gz files db push leaves behind
+  const backups = db
+    .command('backups')
+    .description('List or prune db push backups (~/db-backup-*.sql.gz) on a site');
+
+  backups
+    .command('list <site>')
+    .description('List the db-backup-*.sql.gz files on the remote site (newest first)')
+    .action(async (siteIdentifier: string) => {
+      requireAuth();
+      const { conn } = await resolveAndConnect(siteIdentifier);
+      const list = listRemoteBackups(conn);
+
+      if (isJsonMode()) {
+        console.log(JSON.stringify({
+          success: true,
+          data: { backups: list.map((b) => ({ file: b.file, size_bytes: b.sizeBytes, modified: new Date(b.mtime * 1000).toISOString() })) },
+        }));
+        return;
+      }
+      if (!list.length) { info('No backups found (~/db-backup-*.sql.gz).'); return; }
+      table(['File', 'Size', 'Modified'], list.map((b) => ({
+        file: b.file.replace(/^.*\//, ''),
+        size: formatBytes(b.sizeBytes),
+        modified: new Date(b.mtime * 1000).toISOString().replace('T', ' ').slice(0, 16),
+      })));
+      const total = list.reduce((n, b) => n + b.sizeBytes, 0);
+      info(`${list.length} backup(s), ${formatBytes(total)} total`);
+    });
+
+  backups
+    .command('prune <site>')
+    .description('Delete old db-backup-*.sql.gz files (keep newest N and/or drop older than D days)')
+    .option('--keep <n>', 'Keep the newest N backups, delete the rest', (v) => parseInt(v, 10))
+    .option('--older-than <days>', 'Delete backups older than this many days', (v) => parseInt(v, 10))
+    .option('--force', 'Skip confirmation prompt')
+    .action(async (siteIdentifier: string, opts: any) => {
+      requireAuth();
+      if (opts.keep === undefined && opts.olderThan === undefined) {
+        error('Specify --keep <n> and/or --older-than <days> (refusing to prune without a selector)');
+        process.exit(1);
+      }
+      if ((opts.keep !== undefined && (!Number.isInteger(opts.keep) || opts.keep < 0)) ||
+          (opts.olderThan !== undefined && (!Number.isInteger(opts.olderThan) || opts.olderThan < 0))) {
+        error('--keep / --older-than must be non-negative integers');
+        process.exit(1);
+      }
+      if (isJsonMode() && !opts.force) {
+        error('--force is required when using --json (cannot prompt for confirmation)');
+        process.exit(1);
+      }
+
+      const { conn } = await resolveAndConnect(siteIdentifier);
+      const list = listRemoteBackups(conn);
+      const { toDelete, toKeep } = selectBackupsToPrune(
+        list,
+        { keep: opts.keep, olderThanDays: opts.olderThan },
+        Math.floor(Date.now() / 1000),
+      );
+
+      if (!toDelete.length) {
+        if (isJsonMode()) { console.log(JSON.stringify({ success: true, data: { deleted: [], kept: toKeep.length } })); }
+        else { info(`Nothing to prune (${toKeep.length} backup(s) kept).`); }
+        return;
+      }
+
+      if (!isJsonMode()) {
+        const freed = formatBytes(toDelete.reduce((n, b) => n + b.sizeBytes, 0));
+        console.log(`Will delete ${chalk.bold.red(String(toDelete.length))} backup(s) (${freed}), keeping ${toKeep.length}:`);
+        for (const b of toDelete) console.log(`  ${chalk.dim('-')} ${b.file.replace(/^.*\//, '')}`);
+        if (!opts.force) {
+          const ok = await promptYesNo('Delete these backups? (y/N) ');
+          if (!ok) { info('Cancelled.'); return; }
+        }
+      }
+
+      const quoted = toDelete.map((b) => `'${b.file.replace(/'/g, "'\\''")}'`).join(' ');
+      const rm = execViaSsh(conn, `rm -f ${quoted}`);
+      if (rm.exitCode !== 0) {
+        error('Failed to delete some backups');
+        if (rm.stderr) error(rm.stderr.trim());
+        process.exit(1);
+      }
+      success('Backups pruned', { deleted: toDelete.length, kept: toKeep.length });
     });
 }
