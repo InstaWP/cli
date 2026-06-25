@@ -129,27 +129,46 @@ export function schemaFingerprint(sql: string): string {
   return createHash('sha256').update(blocks.join('\n')).digest('hex');
 }
 
-/** table → (pk literal → tuple body), for single-row INSERTs of delta-eligible tables. */
-function parseInserts(sql: string, schemas: Map<string, TableSchema>): Map<string, Map<string, string>> {
-  const map = new Map<string, Map<string, string>>();
+/** table → ordered list of single-row INSERT tuple bodies (ALL tables, keyable or not). */
+function parseInserts(sql: string): Map<string, string[]> {
+  const map = new Map<string, string[]>();
   for (const raw of sql.split('\n')) {
     const line = raw.trim();
     if (!/^INSERT INTO/i.test(line)) continue;
     const stmt = parseInsertStatement(line);
     if (!stmt || stmt.tuples.length !== 1) continue;
-    if (!map.has(stmt.table)) map.set(stmt.table, new Map());
-    const sch = schemas.get(stmt.table);
-    if (!sch || sch.pkIndex < 0) continue; // table seen but not keyable → eligibility check flags it
-    const pk = splitSqlTuple(stmt.tuples[0])[sch.pkIndex];
-    map.get(stmt.table)!.set(pk, stmt.tuples[0]);
+    if (!map.has(stmt.table)) map.set(stmt.table, []);
+    map.get(stmt.table)!.push(stmt.tuples[0]);
   }
   return map;
+}
+
+/** Index a table's rows by its single-column PK literal (tuple → keyed map). */
+function indexByPk(rows: string[], pkIndex: number): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const tuple of rows) m.set(splitSqlTuple(tuple)[pkIndex], tuple);
+  return m;
+}
+
+/** Order-independent equality of two row-tuple lists (rows are unique per table). */
+function sameRowSet(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const sa = [...a].sort();
+  const sb = [...b].sort();
+  for (let i = 0; i < sa.length; i++) if (sa[i] !== sb[i]) return false;
+  return true;
 }
 
 /**
  * Compute a REPLACE/DELETE delta to bring the remote (== baseline) to `current`.
  * Table identifiers are emitted in the REMOTE prefix (dumpPrefix → remotePrefix).
  * Returns mode:'full' (with a reason) when a delta can't be safely expressed.
+ *
+ * A table WITHOUT a single-column primary key (e.g. `wp_term_relationships`,
+ * composite PK) can't be row-diffed. Such a table is IGNORED when its row set is
+ * unchanged (the common case — present on every WP site), and only forces a full
+ * fallback when it actually changed. (Earlier this gated unconditionally, so any
+ * site with a populated composite-PK table fell back to full on every push.)
  */
 export function computeDelta(opts: {
   baselineSql: string;
@@ -164,16 +183,9 @@ export function computeDelta(opts: {
   }
 
   const schemas = parseCreateTables(currentSql);
-  const cur = parseInserts(currentSql, schemas);
-  const base = parseInserts(baselineSql, schemas);
-
+  const cur = parseInserts(currentSql);
+  const base = parseInserts(baselineSql);
   const allTables = new Set<string>([...cur.keys(), ...base.keys()]);
-  for (const table of allTables) {
-    const sch = schemas.get(table);
-    if (!sch || sch.pkCol == null || sch.pkIndex < 0) {
-      return { mode: 'full', reason: `table \`${table}\` has no single-column primary key` };
-    }
-  }
 
   const remap = (t: string) => (t.startsWith(dumpPrefix) ? remotePrefix + t.slice(dumpPrefix.length) : t);
   const stmts: string[] = [];
@@ -182,20 +194,31 @@ export function computeDelta(opts: {
   let deletes = 0;
 
   for (const table of allTables) {
-    const sch = schemas.get(table)!;
+    const sch = schemas.get(table);
+    const curRows = cur.get(table) ?? [];
+    const baseRows = base.get(table) ?? [];
+
+    // No usable single-column PK → can't row-diff. Ignore if unchanged; else full.
+    if (!sch || sch.pkCol == null || sch.pkIndex < 0) {
+      if (!sameRowSet(baseRows, curRows)) {
+        return { mode: 'full', reason: `table \`${table}\` changed but has no single-column primary key` };
+      }
+      continue;
+    }
+
     const remTable = remap(table);
-    const curRows = cur.get(table) ?? new Map<string, string>();
-    const baseRows = base.get(table) ?? new Map<string, string>();
-    for (const [pk, tuple] of curRows) {
-      const prev = baseRows.get(pk);
+    const curMap = indexByPk(curRows, sch.pkIndex);
+    const baseMap = indexByPk(baseRows, sch.pkIndex);
+    for (const [pk, tuple] of curMap) {
+      const prev = baseMap.get(pk);
       if (prev === undefined || prev !== tuple) {
         stmts.push(`REPLACE INTO \`${remTable}\` VALUES (${tuple});`);
         replaces++;
         changed.add(table);
       }
     }
-    for (const [pk, tuple] of baseRows) {
-      if (!curRows.has(pk)) {
+    for (const [pk, tuple] of baseMap) {
+      if (!curMap.has(pk)) {
         const pkLit = splitSqlTuple(tuple)[sch.pkIndex];
         stmts.push(`DELETE FROM \`${remTable}\` WHERE \`${sch.pkCol}\`=${pkLit};`);
         deletes++;

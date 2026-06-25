@@ -148,16 +148,33 @@ describe('computeDelta', () => {
     expect(r.reason).toMatch(/schema/i);
   });
 
-  it('falls back to full when a populated table lacks a single-column PK', () => {
-    const ddl2 = `CREATE TABLE \`wp_term_relationships\` (
+  const TR_DDL = `CREATE TABLE \`wp_term_relationships\` (
   \`object_id\` bigint(20) NOT NULL,
   \`term_taxonomy_id\` bigint(20) NOT NULL,
   PRIMARY KEY (\`object_id\`,\`term_taxonomy_id\`)
 ) ENGINE=InnoDB;`;
-    const b = dump(ddl2, ['INSERT INTO `wp_term_relationships` VALUES (1,2);']);
-    const c = dump(ddl2, ['INSERT INTO `wp_term_relationships` VALUES (1,3);']);
+
+  it('falls back to full when a composite-PK table actually changed', () => {
+    const b = dump(TR_DDL, ['INSERT INTO `wp_term_relationships` VALUES (1,2);']);
+    const c = dump(TR_DDL, ['INSERT INTO `wp_term_relationships` VALUES (1,3);']);
     const r = computeDelta({ baselineSql: b, currentSql: c, dumpPrefix: 'wp_', remotePrefix: 'wp_' });
     expect(r.mode).toBe('full');
-    expect(r.reason).toMatch(/primary key/i);
+    expect(r.reason).toMatch(/no single-column primary key/i);
+  });
+
+  // B2 regression: a populated composite-PK table (wp_term_relationships exists on
+  // every WP site) must NOT force a full push when it hasn't changed — only when it has.
+  it('ignores an UNCHANGED composite-PK table and still deltas a changed single-PK table', () => {
+    const mk = (blogname: string) => [
+      OPTIONS_DDL(),
+      `INSERT INTO \`wp_options\` VALUES (1,'blogname','${blogname}');`,
+      TR_DDL,
+      'INSERT INTO `wp_term_relationships` VALUES (5,9);', // identical in both dumps
+    ].join('\n') + '\n';
+    const r = computeDelta({ baselineSql: mk('Old'), currentSql: mk('New'), dumpPrefix: 'wp_', remotePrefix: 'iwpa4c7_' });
+    expect(r.mode).toBe('delta');
+    expect(r.stats).toEqual({ tablesChanged: 1, replaces: 1, deletes: 0 });
+    expect(r.sql).toContain('REPLACE INTO `iwpa4c7_options`');
+    expect(r.sql).not.toContain('term_relationships'); // unchanged composite-PK table left untouched
   });
 });
