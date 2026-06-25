@@ -16,7 +16,7 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
-const { spawnInteractiveSsh, execViaSsh, execViaSshStreamStdin, rsyncViaSsh } = await import('../lib/ssh-connection.js');
+const { spawnInteractiveSsh, execViaSsh, execViaSshStreamStdin, scpUpload, rsyncViaSsh } = await import('../lib/ssh-connection.js');
 
 const conn: SshConnection = {
   host: 'test.example.com',
@@ -137,6 +137,22 @@ describe('ssh-connection', () => {
       expect(execViaSshStreamStdin(conn, 'x', false).exitCode).toBe(255);
       mockSpawnSync.mockReturnValue({ status: null });
       expect(execViaSshStreamStdin(conn, 'x', false).exitCode).toBe(1);
+    });
+  });
+
+  describe('scpUpload', () => {
+    it('enables compression (-C) and returns the exit code', () => {
+      mockSpawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });
+
+      const code = scpUpload(conn, '/local/dump.sql', '/tmp/dump.sql');
+
+      expect(code).toBe(0);
+      const cmd = mockSpawnSync.mock.calls[0][0];
+      const args = mockSpawnSync.mock.calls[0][1] as string[];
+      expect(cmd).toBe('scp');
+      expect(args).toContain('-C');
+      expect(args).toContain('/local/dump.sql');
+      expect(args[args.length - 1]).toBe('testuser@test.example.com:/tmp/dump.sql');
     });
   });
 
