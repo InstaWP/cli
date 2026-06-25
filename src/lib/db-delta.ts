@@ -90,7 +90,9 @@ export function hasExtendedInsert(sql: string): boolean {
 /** Parse CREATE TABLE blocks → ordered columns + single-column PK (if any). */
 export function parseCreateTables(sql: string): Map<string, TableSchema> {
   const map = new Map<string, TableSchema>();
-  const re = /CREATE TABLE\s+`([^`]+)`\s*\(([\s\S]*?)\n\)/gi;
+  // Anchored to line-start (m flag): real mysqldump DDL starts at column 0, so a
+  // "CREATE TABLE `x` (" occurring inside a single-line INSERT's row data can't match.
+  const re = /^CREATE TABLE\s+`([^`]+)`\s*\(([\s\S]*?)\n\)/gim;
   let m: RegExpExecArray | null;
   while ((m = re.exec(sql))) {
     const table = m[1];
@@ -114,7 +116,11 @@ export function parseCreateTables(sql: string): Map<string, TableSchema> {
 /** Stable hash of the schema (normalized CREATE TABLE DDL), AUTO_INCREMENT stripped. */
 export function schemaFingerprint(sql: string): string {
   const blocks: string[] = [];
-  const re = /CREATE TABLE[\s\S]*?\n\)[^;]*;/gi;
+  // Anchored to line-start (m flag): without it, "CREATE TABLE … );" appearing
+  // inside row data (e.g. a post documenting SQL) matched too, lazily sweeping
+  // volatile content into the fingerprint → it changed on every data edit →
+  // --incremental always fell back to a full push. (AUTO_INCREMENT already stripped.)
+  const re = /^CREATE TABLE[\s\S]*?\n\)[^;]*;/gim;
   let m: RegExpExecArray | null;
   while ((m = re.exec(sql))) {
     blocks.push(m[0].replace(/AUTO_INCREMENT=\d+/gi, 'AUTO_INCREMENT=').replace(/\s+/g, ' ').trim());

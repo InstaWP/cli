@@ -71,6 +71,40 @@ describe('schemaFingerprint', () => {
     const withCol = OPTIONS_DDL().replace('`option_value` longtext NOT NULL,', '`option_value` longtext NOT NULL,\n  `autoload` varchar(20) NOT NULL DEFAULT \'yes\',');
     expect(schemaFingerprint(withCol)).not.toBe(schemaFingerprint(OPTIONS_DDL()));
   });
+
+  // Regression: "CREATE TABLE … );" text inside row data must NOT count as schema.
+  // Un-anchored, it swept volatile row content into the fingerprint → it changed
+  // on every data edit → --incremental always fell back to a full push (no-op).
+  const adversarialDump = (contentVer: string) => [
+    'CREATE TABLE `wp_posts` (',
+    '  `ID` bigint(20) NOT NULL AUTO_INCREMENT,',
+    '  `post_content` longtext NOT NULL,',
+    '  PRIMARY KEY (`ID`)',
+    ') ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4;',
+    `INSERT INTO \`wp_posts\` VALUES (1,'a doc that says CREATE TABLE \`evil\` (x int); ${contentVer}');`,
+    'CREATE TABLE `wp_options` (',
+    '  `option_id` bigint(20) NOT NULL AUTO_INCREMENT,',
+    '  `option_name` varchar(191) NOT NULL DEFAULT \'\',',
+    '  PRIMARY KEY (`option_id`)',
+    ') ENGINE=InnoDB AUTO_INCREMENT=3 DEFAULT CHARSET=utf8mb4;',
+    "INSERT INTO `wp_options` VALUES (1,'siteurl','http://x');",
+  ].join('\n') + '\n';
+
+  it('ignores "CREATE TABLE" inside row data — stable across a data-only change', () => {
+    expect(schemaFingerprint(adversarialDump('v1'))).toBe(schemaFingerprint(adversarialDump('v2')));
+  });
+
+  it('computeDelta emits a delta (not a full fallback) when only adversarial-row data changed', () => {
+    const r = computeDelta({
+      baselineSql: adversarialDump('v1'),
+      currentSql: adversarialDump('v2'),
+      dumpPrefix: 'wp_',
+      remotePrefix: 'wp_',
+    });
+    expect(r.mode).toBe('delta');
+    expect(r.stats).toEqual({ tablesChanged: 1, replaces: 1, deletes: 0 });
+    expect(r.sql).toContain('REPLACE INTO `wp_posts`');
+  });
 });
 
 describe('computeDelta', () => {
