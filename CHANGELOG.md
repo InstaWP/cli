@@ -15,6 +15,8 @@
 - **`db backups list <site>`** and **`db backups prune <site> [--keep <n>] [--older-than <days>] [--force]`** manage the `~/db-backup-*.sql.gz` files `db push` leaves behind (they previously accumulated with no way to view/clean them).
 - Internal: extracted the HTTP-readiness helper to `lib/http-ready.ts` (now shared by `sites create` and `db push --verify`).
 
+## 0.0.1-beta.25 (2026-06-25)
+
 ### Improved — db push transport & progress (large-DB path)
 
 From round-3 feedback (a 166 MB full-parity push — the transform logic held; transport/progress needed polish):
