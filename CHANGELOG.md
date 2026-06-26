@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.1-beta.26 (2026-06-26)
 
 ### Added — incremental `db push` (#17)
 
