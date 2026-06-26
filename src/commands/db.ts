@@ -1,7 +1,8 @@
 import { Command } from 'commander';
 import { join, dirname, basename } from 'node:path';
-import { existsSync, mkdirSync, statSync, createReadStream, createWriteStream, unlinkSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, createReadStream, createWriteStream, unlinkSync, writeFileSync } from 'node:fs';
 import { createGunzip } from 'node:zlib';
+import { createInterface } from 'node:readline';
 import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
 import chalk from 'chalk';
@@ -13,7 +14,7 @@ import { parseTablePrefix } from '../lib/local-instance.js';
 import { detectDumpPrefix, readSqlHead, rewriteDumpPrefix } from '../lib/sql-dump.js';
 import { waitForHttp } from '../lib/http-ready.js';
 import { parseBackupList, selectBackupsToPrune, type RemoteBackup } from '../lib/db-backups.js';
-import { computeDelta, hasExtendedInsert, schemaFingerprint, type DeltaResult } from '../lib/db-delta.js';
+import { buildManifest, diffAgainstManifest, prefixFromTableNames, ExtendedInsertError, type Manifest } from '../lib/db-delta.js';
 import { loadBaseline, saveBaseline } from '../lib/db-baseline.js';
 import { success, error, spinner, info, table, isJsonMode } from '../lib/output.js';
 import type { SshConnection } from '../types.js';
@@ -84,13 +85,11 @@ function isGzipped(file: string): boolean {
   return file.endsWith('.gz') || file.endsWith('.gzip');
 }
 
-/** Read the passed dump as plain SQL text (decompressing a .gz to a tracked temp). */
-async function loadCanonicalDump(file: string, localTemps: Set<string>): Promise<string> {
-  if (!isGzipped(file)) return readFileSync(file, 'utf-8');
-  const tmp = join(process.env.TMPDIR || '/tmp', `instawp-incr-${randomBytes(6).toString('hex')}.sql`);
-  localTemps.add(tmp);
-  await gunzipFile(file, tmp);
-  return readFileSync(tmp, 'utf-8');
+/** Stream a dump file's lines (decompressing a .gz on the fly). Bounded memory. */
+function openDumpLines(file: string): AsyncIterable<string> {
+  const raw = createReadStream(file);
+  const input = isGzipped(file) ? raw.pipe(createGunzip()) : raw;
+  return createInterface({ input, crlfDelay: Infinity });
 }
 
 /**
@@ -102,64 +101,70 @@ async function loadCanonicalDump(file: string, localTemps: Set<string>): Promise
 async function prepareIncremental(p: {
   file: string; site: any; conn: SshConnection; wpPath: string; remoteHome: string; opts: any;
   srFrom?: string; srTo?: string; srTables: string[];
-}): Promise<{ done: boolean; baseline?: { sql: string; fingerprint: string } }> {
+}): Promise<{ done: boolean; baseline?: Manifest }> {
   const { file, site, conn, wpPath, remoteHome, opts, srFrom, srTo, srTables } = p;
-  const localTemps = new Set<string>();
-  const cleanup = () => { for (const f of localTemps) { try { unlinkSync(f); } catch { /* ignore */ } } };
   try {
-    const sql = await loadCanonicalDump(file, localTemps);
-    if (hasExtendedInsert(sql)) {
-      error('--incremental needs a per-row dump. Re-export with: mysqldump --skip-extended-insert --order-by-primary (or `wp db export` with those flags).');
-      process.exit(1);
-    }
-    const fingerprint = schemaFingerprint(sql);
-    const baseline = loadBaseline(site.id);
+    const baseline = opts.full ? null : loadBaseline(site.id);
 
-    // Full (re)base required → fall through to the full push, refresh baseline after.
-    if (opts.full || !baseline || baseline.fingerprint !== fingerprint) {
-      const why = opts.full ? '--full requested' : !baseline ? 'no baseline yet (first incremental push)' : 'schema changed since the baseline';
+    // First run / --full / no baseline → build a manifest from the current dump
+    // (streamed) and fall through to the full push, which refreshes the baseline.
+    if (!baseline) {
+      const why = opts.full ? '--full requested' : 'no baseline yet (first incremental push)';
       info(`Full push (${why}); the incremental baseline will be refreshed afterwards.`);
-      return { done: false, baseline: { sql, fingerprint } };
+      const mSpin = spinner('Indexing the dump for the baseline...');
+      mSpin.start();
+      const manifest = await buildManifest(openDumpLines(file));
+      mSpin.succeed('Dump indexed');
+      return { done: false, baseline: manifest };
     }
 
-    // Compute the row delta vs the stored baseline.
+    // Diff the current dump (streamed) against the stored baseline manifest.
     const pfxRes = execViaSsh(conn, `cd ${wpPath} && wp config get table_prefix`);
     const remotePrefix = parseTablePrefix(pfxRes.exitCode === 0 ? pfxRes.stdout : '', 'wp_');
-    const dumpPrefix = detectDumpPrefix(sql) ?? 'wp_';
-    const delta = computeDelta({ baselineSql: baseline.sql, currentSql: sql, dumpPrefix, remotePrefix });
+    const dumpPrefix = prefixFromTableNames([...baseline.single.keys(), ...baseline.composite.keys()]) ?? 'wp_';
 
-    if (delta.mode === 'full') {
-      info(`Full push (${delta.reason}); the incremental baseline will be refreshed afterwards.`);
-      return { done: false, baseline: { sql, fingerprint } };
+    const diffSpin = spinner('Computing the delta vs the baseline...');
+    diffSpin.start();
+    const result = await diffAgainstManifest(openDumpLines(file), baseline, { dumpPrefix, remotePrefix });
+    diffSpin.stop();
+
+    if (result.mode === 'full') {
+      info(`Full push (${result.reason}); the incremental baseline will be refreshed afterwards.`);
+      return { done: false, baseline: result.newManifest };
     }
 
-    if (!delta.sql) {
+    if (!result.sql) {
       info('No changes since the last push.');
-      saveBaseline(site.id, sql, fingerprint, new Date().toISOString());
+      saveBaseline(site.id, result.newManifest);
       success('Incremental push complete', { site_id: site.id, changed: false, replaces: 0, deletes: 0, tables_changed: 0 });
       return { done: true };
     }
 
     if (!opts.force && !isJsonMode()) {
-      console.log(`\nIncremental push to ${chalk.bold(conn.domain)}: ${chalk.bold(String(delta.stats!.replaces))} change(s), ${chalk.bold(String(delta.stats!.deletes))} deletion(s) across ${delta.stats!.tablesChanged} table(s). A backup is taken first.`);
+      console.log(`\nIncremental push to ${chalk.bold(conn.domain)}: ${chalk.bold(String(result.stats!.replaces))} change(s), ${chalk.bold(String(result.stats!.deletes))} deletion(s) across ${result.stats!.tablesChanged} table(s). A backup is taken first.`);
       const ok = await promptYesNo('Apply this delta? (y/N) ');
       if (!ok) { info('Cancelled.'); return { done: true }; }
     }
 
-    await applyDelta({ conn, wpPath, remoteHome, site, delta, takeBackup: opts.backup !== false, remapFrom: dumpPrefix, remotePrefix, srFrom, srTo, srTables, verify: !!opts.verify });
-    saveBaseline(site.id, sql, fingerprint, new Date().toISOString());
+    await applyDelta({ conn, wpPath, remoteHome, site, deltaSql: result.sql, stats: result.stats!, takeBackup: opts.backup !== false, remapFrom: dumpPrefix, remotePrefix, srFrom, srTo, srTables, verify: !!opts.verify });
+    saveBaseline(site.id, result.newManifest);
     return { done: true };
-  } finally {
-    cleanup();
+  } catch (e) {
+    if (e instanceof ExtendedInsertError) {
+      error('--incremental needs a per-row dump. Re-export with: mysqldump --skip-extended-insert --order-by-primary (or `wp db export` with those flags).');
+      process.exit(1);
+    }
+    throw e;
   }
 }
 
 /** Apply a computed delta to the remote (backup → upload → import → remap → search-replace → verify). */
 async function applyDelta(p: {
-  conn: SshConnection; wpPath: string; remoteHome: string; site: any; delta: DeltaResult;
+  conn: SshConnection; wpPath: string; remoteHome: string; site: any;
+  deltaSql: string; stats: { tablesChanged: number; replaces: number; deletes: number };
   takeBackup: boolean; remapFrom: string; remotePrefix: string; srFrom?: string; srTo?: string; srTables: string[]; verify: boolean;
 }): Promise<void> {
-  const { conn, wpPath, remoteHome, site, delta, takeBackup, remapFrom, remotePrefix, srFrom, srTo, srTables, verify } = p;
+  const { conn, wpPath, remoteHome, site, deltaSql, stats, takeBackup, remapFrom, remotePrefix, srFrom, srTo, srTables, verify } = p;
   const startedAt = Date.now();
   const backupFilename = `db-backup-${isoTimestamp()}.sql.gz`;
   const backupRemotePath = `${remoteHome}/${backupFilename}`;
@@ -176,7 +181,7 @@ async function applyDelta(p: {
 
   const remoteTemp = `/tmp/db-delta-${randomBytes(6).toString('hex')}.sql`;
   const localTemp = join(process.env.TMPDIR || '/tmp', `instawp-db-delta-${randomBytes(6).toString('hex')}.sql`);
-  writeFileSync(localTemp, delta.sql!, 'utf-8');
+  writeFileSync(localTemp, deltaSql, 'utf-8');
   const up = spinner('Uploading delta...');
   up.start();
   const scpExit = scpUpload(conn, localTemp, remoteTemp);
@@ -184,7 +189,7 @@ async function applyDelta(p: {
   if (scpExit !== 0) { up.fail(`Upload failed (scp exit ${scpExit})`); if (takeBackup) info(`Remote backup preserved: ~/${backupFilename}`); process.exit(1); }
   up.succeed('Delta uploaded');
 
-  const imp = spinner(`Applying delta (${delta.stats!.replaces} change, ${delta.stats!.deletes} delete) on ${conn.domain}...`);
+  const imp = spinner(`Applying delta (${stats.replaces} change, ${stats.deletes} delete) on ${conn.domain}...`);
   imp.start();
   const ir = execViaSsh(conn, `cd ${wpPath} && wp db import ${remoteTemp}`);
   execViaSsh(conn, `rm -f ${remoteTemp}`);
@@ -240,9 +245,9 @@ async function applyDelta(p: {
     site_id: site.id,
     backup_path: takeBackup ? backupRemotePath : null,
     changed: true,
-    replaces: delta.stats!.replaces,
-    deletes: delta.stats!.deletes,
-    tables_changed: delta.stats!.tablesChanged,
+    replaces: stats.replaces,
+    deletes: stats.deletes,
+    tables_changed: stats.tablesChanged,
     elapsed: `${elapsedSec < 10 ? elapsedSec.toFixed(1) : Math.round(elapsedSec)}s`,
     ...(verified ? { verified } : {}),
   });
@@ -435,7 +440,7 @@ Examples:
       // #17 — incremental delta push (additive). May fully handle the push and
       // return; otherwise falls through to the full push below (unchanged) and
       // refreshes the baseline once it succeeds.
-      let baselineToSave: { sql: string; fingerprint: string } | null = null;
+      let baselineToSave: Manifest | null = null;
       if (opts.incremental || opts.full) {
         const decision = await prepareIncremental({ file, site, conn, wpPath, remoteHome, opts, srFrom, srTo, srTables });
         if (decision.done) return;
@@ -692,7 +697,7 @@ Examples:
       // #17 — record the baseline after a successful full (re)base, so the next
       // --incremental push can diff against it.
       if (baselineToSave) {
-        saveBaseline(site.id, baselineToSave.sql, baselineToSave.fingerprint, new Date().toISOString());
+        saveBaseline(site.id, baselineToSave);
       }
     });
 

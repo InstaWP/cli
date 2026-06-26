@@ -6,6 +6,7 @@
 
 - **`db push --incremental`** ships only the **row-level delta** since the last push instead of the whole DB: it diffs the dump against a per-site baseline (`~/.instawp/baselines/<id>/`) and applies a minimal `REPLACE`/`DELETE` set (no `DROP`/`CREATE`). First run, a schema/DDL change, or **`--full`** do a normal full push and refresh the baseline. Requires a per-row dump (`mysqldump --skip-extended-insert --order-by-primary`; extended-insert dumps are rejected). Reuses the existing safety machinery — remote backup first, prefix/role-key remap, scoped URL search-replace, `--verify`. **The full `db push` path is unchanged; incremental is purely additive.**
 - MVP scope: tables with a single-column primary key (WP core + most plugin tables); anything without one — or any DDL change — auto-falls-back to a full push. The diff engine (`lib/db-delta.ts`) and baseline store (`lib/db-baseline.ts`) are pure and unit-tested.
+- **Memory-bounded:** the baseline is stored as a compact per-row **hash manifest** (PK → content hash), not the full dump, and the current dump is **streamed** line-by-line (gz-decompressed on the fly) — so a large DB diffs in a few hundred MB instead of loading both dumps into the heap (a naive 2× full-dump diff OOM'd at ~4 GB on a 166 MB DB).
 
 ### Added — db push readiness/scoping + backup retention (large-DB feedback #16)
 
