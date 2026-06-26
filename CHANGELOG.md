@@ -1,6 +1,19 @@
 # Changelog
 
-## 0.0.1-beta.25 (2026-06-25)
+## Unreleased
+
+### Added — incremental `db push` (#17)
+
+- **`db push --incremental`** ships only the **row-level delta** since the last push instead of the whole DB: it diffs the dump against a per-site baseline (`~/.instawp/baselines/<id>/`) and applies a minimal `REPLACE`/`DELETE` set (no `DROP`/`CREATE`). First run, a schema/DDL change, or **`--full`** do a normal full push and refresh the baseline. Requires a per-row dump (`mysqldump --skip-extended-insert --order-by-primary`; extended-insert dumps are rejected). Reuses the existing safety machinery — remote backup first, prefix/role-key remap, scoped URL search-replace, `--verify`. **The full `db push` path is unchanged; incremental is purely additive.**
+- MVP scope: tables with a single-column primary key (WP core + most plugin tables); anything without one — or any DDL change — auto-falls-back to a full push. The diff engine (`lib/db-delta.ts`) and baseline store (`lib/db-baseline.ts`) are pure and unit-tested.
+- **Memory-bounded:** the baseline is stored as a compact per-row **hash manifest** (PK → content hash), not the full dump, and the current dump is **streamed** line-by-line (gz-decompressed on the fly) — so a large DB diffs in a few hundred MB instead of loading both dumps into the heap (a naive 2× full-dump diff OOM'd at ~4 GB on a 166 MB DB).
+
+### Added — db push readiness/scoping + backup retention (large-DB feedback #16)
+
+- **`db push --verify`** polls the site URL until it answers HTTP after the import (a large import can briefly return `000` right after import/flush); reported as `verified` in the summary.
+- **`db push --sr-tables <table...>`** scopes `--search-replace` to specific (prefixed) tables instead of all tables — faster on big DBs whose bulk rows have no URLs. Default stays `--all-tables`.
+- **`db backups list <site>`** and **`db backups prune <site> [--keep <n>] [--older-than <days>] [--force]`** manage the `~/db-backup-*.sql.gz` files `db push` leaves behind (they previously accumulated with no way to view/clean them).
+- Internal: extracted the HTTP-readiness helper to `lib/http-ready.ts` (now shared by `sites create` and `db push --verify`).
 
 ### Improved — db push transport & progress (large-DB path)
 
