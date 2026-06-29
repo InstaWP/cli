@@ -14,6 +14,7 @@ import { registerExecCommand, registerWpCommand, registerSqlCommand } from './co
 import { registerPluginCommand } from './commands/plugin.js';
 import { registerTeamsCommand } from './commands/teams.js';
 import { registerLocalCommand } from './commands/local.js';
+import { registerMigrateCommand } from './commands/migrate.js';
 import { registerDbCommand } from './commands/db.js';
 import { registerOpenCommand } from './commands/open.js';
 import { registerLogsCommand } from './commands/logs.js';
@@ -64,6 +65,9 @@ registerTeamsCommand(program);
 
 // -- Local dev --
 registerLocalCommand(program);
+
+// -- Migration (local WP dir → new hosted site) --
+registerMigrateCommand(program);
 
 // -- Self-update --
 registerUpgradeCommand(program);
@@ -133,6 +137,9 @@ ${d('Local Development')}
   ${c('local pull')}         Pull cloud wp-content to local site
   ${c('local list')}         List local sites
   ${c('local delete')}       Delete a local site
+
+${d('Migration')}
+  ${c('migrate push')}  ${d('[path]')}   Mirror a local WP install to a new hosted InstaWP site
 
 ${d('Teams')}
   ${c('teams list')}         List teams

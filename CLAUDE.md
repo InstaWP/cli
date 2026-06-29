@@ -23,11 +23,14 @@ src/
 │   ├── ssh.ts               # Interactive SSH shell
 │   ├── sync.ts              # rsync push/pull via SSH
 │   ├── teams.ts             # teams list/switch/members
-│   └── local.ts             # local create/clone/start/stop/push/pull/list/delete
+│   ├── local.ts             # local create/clone/start/stop/push/pull/list/delete
+│   └── migrate.ts           # migrate push (local WP dir → brand-new hosted site)
 ├── lib/
 │   ├── api.ts               # Axios client, auth interceptor, team_id injection
 │   ├── auth.ts              # OAuth flow (local HTTP server for callback)
 │   ├── config.ts            # Conf-based persistent config (~/.config/instawp/)
+│   ├── wp-local.ts          # WP-root/wp-config/version detection (pure, for migrate push)
+│   ├── wp-archive.ts        # zip (archiver) + DB export (wp/mysqldump) for migrate push
 │   ├── local-env.ts         # Playground server management, background mode
 │   ├── output.ts            # chalk/ora output helpers, --json mode
 │   ├── site-resolver.ts     # Resolve site by ID/name/domain with caching
@@ -87,6 +90,9 @@ instawp local push <local-name> [cloud-site] [--dry-run]
 instawp local pull <local-name> <cloud-site> [--dry-run]
 instawp local list
 instawp local delete <name> [--force]
+
+# Migration (local WordPress dir → brand-new hosted site)
+instawp migrate push [path] [--path <dir>] [--name <n>] [--source-url <url>] [--wp <v>] [--php <v>] [--keep-archives] [--dry-run]
 ```
 
 All commands support `--json` for machine-readable output.
@@ -144,6 +150,21 @@ Pushes the local Playground DB back to the cloud MySQL, OVERWRITING it. Implemen
 8. `wp search-replace <local-url> <cloud-url>` (serialization-safe — NOT done in SQL) → `wp cache flush`
 
 **Why no official tool:** WordPress has no SQLite→MySQL exporter — [sqlite-database-integration#36](https://github.com/WordPress/sqlite-database-integration/issues/36) is open since 2023; the community workaround regenerates schema with `text→varchar(255)` (truncates content) + `addslashes`. Our data-only approach (reuse cloud schema) avoids both. `wp db export` can't help (shells to mysqldump, absent in Playground). Caveat: assumes schema parity (true for clones); plugin tables created only-locally are skipped.
+
+### Migrate push flow (`migrate push [path]`) — local WP dir → brand-new hosted site
+The standalone-CLI replacement for the plugin's `wp instawp local push`. Mirrors an **arbitrary on-disk WordPress install** (NOT a Playground instance — that's `local push`) up to a fresh hosted site. Implemented in `commands/migrate.ts` + `lib/wp-local.ts` + `lib/wp-archive.ts`.
+1. **Locate the WP root** — walk up from `[path]`/`--path`/cwd to `wp-includes/version.php` (`findWpRoot`); parse `wp-config.php` for DB creds + `$table_prefix` + `WP_HOME`/`WP_SITEURL` (`parseWpConfig`).
+2. **Detect source URL** — `wp option get home`/`siteurl` (if wp-cli works on the install), else the `WP_HOME`/`WP_SITEURL` constants, else a direct `mysql` query; `--source-url` overrides. Normalized to `source_domain` (no scheme/`www.`/trailing slash) so the server regex accepts it.
+3. **Archive files** — stream a zip via `archiver`, excluding EXACTLY the plugin's skip-list (`wp-content/instawpbackups`, `wp-content/upgrade`, plugins `instawp-connect`/`instawp-helper`/`iwp-migration`). Files added relative to the WP root so the restore engine sees a normal WP tree.
+4. **Export DB** — `wp db export` if wp-cli works on the install, else `mysqldump` driven by the wp-config creds (password via `MYSQL_PWD`, never in argv). Raw `.sql`, matching the plugin.
+5. **Create a reserved site** — `POST /sites { is_reserved: true, wp_version }`, poll `GET /tasks/{id}/status`.
+6. **Upload** — `ensureSshAccess()` (key-based), then `scp` both archives into `/home/{user}/web/{sub_domain}/public_html/` — the exact path `restore-raw` reconstructs server-side.
+7. **Restore** — `PUT /sites/{id}/restore-raw { file_bkp, db_bkp, source_domain }` → poll the returned `task_id`. The **server-side restore engine** (cloud-app → InstaCP) unzips, imports, and search-replaces `source_domain` → the new domain. This is what makes it a faithful mirror (prefix/URL/serialized-data rewrite happens server-side — the CLI does none of it).
+8. Best-effort `rm` of the uploaded archives from the new webroot; `waitForHttp` the new URL; report.
+
+**Auth model (the key decision):** runs entirely on the CLI's personal API token over **site-scoped** routes. The plugin uses connect-scoped routes (`connects/{cid}/sites/...`) because the plugin IS a connect; every one of those has a personal-token site-scoped equivalent (`POST /sites`, `GET /tasks/{id}/status`, `POST /sites/{id}/update-sftp-status`, `GET /sites/{id}/sftp-details`, **`PUT /sites/{id}/restore-raw`**). `CheckConnectApiToken` only gates tokens whose `device_type == TOKEN_TYPE_CONNECT_MANAGE`; a personal token passes through. So **no Connect record and no migration-dashboard/tracking entry are created** — only the files+DB migration, which is identical to the plugin's outcome. (The plugin's `migrates-v3/local-push` + `finish-local-staging` bookkeeping is intentionally skipped.)
+
+**Caveats:** the new site has NO `instawp-connect` plugin (it's excluded, faithful to the local files) — manage via SSH / `instawp wp` / `instawp open`. After restore the site's admin login is the LOCAL site's users (the DB was replaced), not the freshly-minted creds. On Local-by-Flywheel and similar, `wp`/the DB socket usually aren't reachable from the host shell, so run from a shell where `wp` works or pass `--source-url` (the mysqldump fallback still needs DB reachability).
 
 ### Background mode
 - `--background` flag spawns detached process, polls until server responds, returns immediately
@@ -217,7 +238,8 @@ See `vendor/win32/NOTICE.md` for source + license (BusyBox is GPL-2.0).
 |----------|---------|
 | `GET /api/v2/sites` | sites list, site resolver |
 | `GET /api/v2/sites/{id}/details` | site resolver |
-| `POST /api/v2/sites` | sites create, local push (auto-create) |
+| `POST /api/v2/sites` | sites create, local push (auto-create), migrate push (new site) |
+| `PUT /api/v2/sites/{id}/restore-raw` | migrate push (server-side restore of uploaded zip+sql) |
 | `DELETE /api/v2/sites/{id}` | sites delete |
 | `POST /api/v2/sites/{id}/run-cmd` | exec --api, wp --api |
 | `GET /api/v2/site-versions?site_id={id}` | versions list |

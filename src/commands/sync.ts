@@ -5,7 +5,7 @@ import { requireAuth } from '../lib/api.js';
 import { resolveSite } from '../lib/site-resolver.js';
 import { ensureSshAccess } from '../lib/ssh-keys.js';
 import { syncFiles } from '../lib/ssh-connection.js';
-import { buildRemotePath } from '../lib/paths.js';
+import { buildRemotePath, buildSyncFilterArgs } from '../lib/paths.js';
 import { success, error, spinner, info } from '../lib/output.js';
 
 function checkRsync(): boolean {
@@ -79,18 +79,7 @@ export function registerSyncCommand(program: Command): void {
       const remotePath = buildRemotePath(conn, opts);
       const remoteTarget = `${conn.username}@${conn.host}:${remotePath}`;
 
-      const extraArgs: string[] = [];
-      if (opts.exclude) {
-        for (const pattern of opts.exclude) {
-          extraArgs.push(`--exclude=${pattern}`);
-        }
-      }
-      if (opts.include) {
-        for (const pattern of opts.include) {
-          extraArgs.push(`--include=${pattern}`);
-        }
-      }
-      if (opts.delete) extraArgs.push('--delete');
+      const extraArgs = buildSyncFilterArgs(opts);
 
       // --delete is destructive; confirm unless --dry-run or --yes.
       if (opts.delete && !opts.dryRun && !opts.yes) {
@@ -156,18 +145,7 @@ export function registerSyncCommand(program: Command): void {
       const remotePath = buildRemotePath(conn, opts);
       const remoteSource = `${conn.username}@${conn.host}:${remotePath}`;
 
-      const extraArgs: string[] = [];
-      if (opts.exclude) {
-        for (const pattern of opts.exclude) {
-          extraArgs.push(`--exclude=${pattern}`);
-        }
-      }
-      if (opts.include) {
-        for (const pattern of opts.include) {
-          extraArgs.push(`--include=${pattern}`);
-        }
-      }
-      if (opts.delete) extraArgs.push('--delete');
+      const extraArgs = buildSyncFilterArgs(opts);
 
       // --delete is destructive; confirm unless --dry-run or --yes.
       if (opts.delete && !opts.dryRun && !opts.yes) {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.0.1-beta.27 (2026-06-29)
+
+### Fixed — `sync push`/`pull` include/exclude ordering (#18)
+
+- **`sync push`/`pull` now emit user `--include` patterns BEFORE user `--exclude` patterns.** rsync is first-match-wins, so the previous order (excludes first) made the standard include-only idiom (`--include '*/' '*.html' --exclude '*'`) silently match **nothing** — the catch-all `--exclude '*'` matched every path before any include was considered, looking exactly like "already in sync." Ordering is now built by a pure, unit-tested `buildSyncFilterArgs` helper. (`--delete` stays last; it's an action flag, not a filter rule.)
+
+### Added — `migrate push` (local WordPress → new hosted site)
+
+- **`instawp migrate push [path]`** mirrors an on-disk WordPress install up to a **brand-new hosted InstaWP site** — the standalone-CLI replacement for the plugin's `wp instawp local push`. It archives the WP files (zip), exports the DB (`wp db export` if wp-cli works on the install, else `mysqldump` from wp-config.php creds), creates a reserved site, uploads both archives into the new site's webroot over SSH, and triggers the server-side **restore-raw** engine (`PUT /sites/{id}/restore-raw`), which unzips, imports, and search-replaces the old domain → new domain to produce a faithful copy.
+- Runs entirely on the CLI's personal API token over **site-scoped** routes — no Connect record and no migration-dashboard/tracking entry is created (the actual files+DB migration is identical to the plugin's).
+- Files archive excludes exactly what the plugin does: `wp-content/instawpbackups`, `wp-content/upgrade`, and the `instawp-connect` / `instawp-helper` / `iwp-migration` plugins.
+- Flags: `--path`, `--name`, `--source-url` (auto-detected from wp-cli/wp-config when omitted), `--wp`, `--php`, `--keep-archives`, `--dry-run`, `--json`. The WP root is auto-located by walking up to `wp-includes/version.php`.
+- New libs `lib/wp-local.ts` (WP-root/wp-config/version detection + source-domain normalization, all pure & unit-tested) and `lib/wp-archive.ts` (streaming zip via `archiver` + DB export). Adds the `archiver` dependency.
+
 ## 0.0.1-beta.26 (2026-06-26)
 
 ### Added — incremental `db push` (#17)

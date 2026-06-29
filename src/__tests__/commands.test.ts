@@ -91,6 +91,20 @@ describe('command registration', () => {
     expect(cmd).toBeDefined();
   });
 
+  it('registers migrate command with a push subcommand', async () => {
+    const { registerMigrateCommand } = await import('../commands/migrate.js');
+    const program = new Command();
+    registerMigrateCommand(program);
+    const migrate = program.commands.find(c => c.name() === 'migrate');
+    expect(migrate).toBeDefined();
+    const push = migrate!.commands.find(c => c.name() === 'push');
+    expect(push).toBeDefined();
+    const optNames = push!.options.map(o => o.long);
+    expect(optNames).toContain('--path');
+    expect(optNames).toContain('--source-url');
+    expect(optNames).toContain('--dry-run');
+  });
+
   it('registers wp command from exec module', async () => {
     const { registerWpCommand } = await import('../commands/exec.js');
     const program = new Command();

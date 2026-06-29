@@ -50,6 +50,25 @@ export function buildRemotePath(
 }
 
 /**
+ * Build the rsync filter args (`--include`/`--exclude`) plus `--delete` for a
+ * sync, in the ORDER rsync requires. rsync is **first-match-wins**, so user
+ * `--include` patterns MUST precede user `--exclude` patterns — otherwise the
+ * classic include-only idiom (include the dir glob + `*.html`, then a catch-all
+ * `--exclude *`) lets the catch-all match (and stop recursing into) everything
+ * before any include is considered, silently transferring nothing (#18).
+ * `--delete` is an action flag, not a filter rule — keep it last.
+ */
+export function buildSyncFilterArgs(
+  opts: { include?: string[]; exclude?: string[]; delete?: boolean } = {},
+): string[] {
+  const args: string[] = [];
+  for (const pattern of opts.include ?? []) args.push(`--include=${pattern}`);
+  for (const pattern of opts.exclude ?? []) args.push(`--exclude=${pattern}`);
+  if (opts.delete) args.push('--delete');
+  return args;
+}
+
+/**
  * Resolve a path inside the CLI's installed directory (e.g. bundled scripts).
  *
  * `new URL(import.meta.url).pathname` returns `/C:/...` on Windows which is
