@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.0.1-beta.31 (2026-07-02)
+
+### Fixed — remote docroot resolved from the server (domain-cutover sites)
+
+After a custom-domain cutover, the platform API reports the new primary domain (e.g. `instawp.com`) as the site's `sub_domain`/`main_domain`, but the HestiaCP web dir keeps the **original** name (`instawp-marketing.instawp.site`). The CLI built remote paths as `~/web/<api-domain>/public_html`, so `exec`/`wp` (SSH) `cd`'d into a nonexistent dir ("No such file or directory") and `sync` pushed to the wrong, non-served path — only an absolute `--remote-path` worked.
+
+- `ensureSshAccess` now resolves the **real web dir from the server** (`resolveRemoteWebDir` — an SSH lookup for the `public_html` that actually holds `wp-config.php`) and stores it in `conn.domain` (resolved once, cached). All path construction — `exec`/`wp` `cd`, `sync`'s `buildRemotePath`, `db`, `migrate` — now targets the served docroot. No API field exposes the original name, so this is done over SSH; best-effort, keeps the API domain if the lookup fails.
+- Verified end-to-end: `instawp wp <cutover-site> option get siteurl` → `https://instawp.com`, `exit_code: 0` (previously failed on a bad `cd`).
+
 ## 0.0.1-beta.30 (2026-07-02)
 
 ### Fixed — CLI auto-resolves the SSH origin for CDN-fronted sites (no env var needed)

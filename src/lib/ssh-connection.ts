@@ -1,9 +1,11 @@
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { existsSync, mkdirSync, openSync, closeSync } from 'node:fs';
 import type { SshConnection } from '../types.js';
 import { toRsyncPath } from './paths.js';
+import { sliceAfterMarker } from './remote-command.js';
 import { syncViaSftp } from './sftp-sync.js';
 
 const KNOWN_HOSTS = path.join(homedir(), '.instawp', 'known_hosts');
@@ -66,6 +68,26 @@ export function spawnInteractiveSsh(conn: SshConnection): number {
     stdio: 'inherit',
   });
   return result.status ?? 1;
+}
+
+/**
+ * Resolve the site's real web-dir NAME from the server. The platform API's
+ * "domain" can be a custom PRIMARY domain (after a domain cutover) while the
+ * HestiaCP web dir keeps the ORIGINAL sub_domain — so `~/web/<api-domain>/public_html`
+ * points at a dir that doesn't exist (exec/wp `cd` fails, sync pushes to the wrong
+ * path). Ask the server for the web dir whose public_html actually holds
+ * wp-config.php. Returns the dir name (e.g. "abc.instawp.site"), or null on any
+ * failure so the caller keeps the API domain.
+ */
+export function resolveRemoteWebDir(conn: SshConnection): string | null {
+  const marker = `__IWP_WEBDIR_${randomBytes(4).toString('hex')}__`;
+  // Marker-print then find the WP docroot; MOTD (if any) precedes the marker.
+  const cmd = `printf '%s\\n' '${marker}'; for d in "$HOME"/web/*/public_html; do if [ -f "$d/wp-config.php" ]; then basename "$(dirname "$d")"; break; fi; done`;
+  const res = execViaSsh(conn, cmd);
+  if (res.exitCode !== 0) return null;
+  const out = sliceAfterMarker(res.stdout, marker);
+  const name = out.split('\n').map((s) => s.trim()).filter(Boolean)[0];
+  return name || null;
 }
 
 export function execViaSsh(conn: SshConnection, command: string): { stdout: string; stderr: string; exitCode: number } {

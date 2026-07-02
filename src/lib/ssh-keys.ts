@@ -6,6 +6,7 @@ import { getClient } from './api.js';
 import { getSshCache, setSshCache, clearSshCache, getSshHostOverride } from './config.js';
 import { error, info, spinner } from './output.js';
 import { probeTcp, printSshUnreachable, SshUnreachableError } from './ssh-preflight.js';
+import { resolveRemoteWebDir } from './ssh-connection.js';
 import type { SshConnection, SshKeyInfo } from '../types.js';
 
 const INSTAWP_DIR = path.join(homedir(), '.instawp');
@@ -111,6 +112,16 @@ export async function ensureSshAccess(siteId: number, opts: EnsureSshOptions = {
     }
     printSshUnreachable(connection.host, connection.port);
     process.exit(1);
+  }
+
+  // Resolve the REAL web dir (docroot) from the server. The API "domain" can be a
+  // custom primary domain (post-cutover) while the HestiaCP web dir keeps the
+  // original sub_domain, so `~/web/<api-domain>/public_html` wouldn't exist. Do it
+  // once per connection (cached) — best-effort; keep the API domain if it fails.
+  if (!connection.webDirResolved) {
+    const webDir = resolveRemoteWebDir(connection);
+    connection = { ...connection, domain: webDir || connection.domain, webDirResolved: true };
+    setSshCache(siteId, { connection, cachedAt: Date.now() });
   }
   return connection;
 }

@@ -81,7 +81,11 @@ export interface SshConnection {
   port: number;
   privateKeyPath: string;
   siteId: number;
+  /** The REAL web-dir name (`~/web/<domain>/public_html`). Post-cutover this is the
+   *  original sub_domain, NOT the API's primary domain — resolved from the server. */
   domain: string;
+  /** True once the web dir has been resolved from the server (cached; resolve once). */
+  webDirResolved?: boolean;
 }
 
 export interface SshConnectionCache {
