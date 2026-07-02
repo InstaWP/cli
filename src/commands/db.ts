@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { join, dirname, basename } from 'node:path';
-import { existsSync, mkdirSync, statSync, createReadStream, createWriteStream, unlinkSync, writeFileSync } from 'node:fs';
-import { createGunzip } from 'node:zlib';
+import { existsSync, mkdirSync, statSync, createReadStream, createWriteStream, unlinkSync, writeFileSync, readFileSync } from 'node:fs';
+import { createGunzip, gunzipSync } from 'node:zlib';
 import { createInterface } from 'node:readline';
 import { pipeline } from 'node:stream/promises';
 import { randomBytes } from 'node:crypto';
@@ -16,6 +16,7 @@ import { waitForHttp } from '../lib/http-ready.js';
 import { parseBackupList, selectBackupsToPrune, type RemoteBackup } from '../lib/db-backups.js';
 import { buildManifest, diffAgainstManifest, prefixFromTableNames, ExtendedInsertError, type Manifest } from '../lib/db-delta.js';
 import { loadBaseline, saveBaseline } from '../lib/db-baseline.js';
+import { runViaApi, chunkString } from '../lib/api-exec.js';
 import { success, error, spinner, info, table, isJsonMode } from '../lib/output.js';
 import type { SshConnection } from '../types.js';
 
@@ -33,6 +34,145 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/**
+ * `db pull --api`: export the remote DB over the run-cmd API (no SSH) as a
+ * base64'd gzip stream, decode it locally. One request/response — best for
+ * small/medium DBs; large ones should use SSH (INSTAWP_SSH_HOST for CDN-fronted).
+ */
+async function dbPullViaApi(site: any, opts: any): Promise<void> {
+  const compress = opts.compress !== false;
+  const siteLabel = sanitizeForFilename(site.name || site.sub_domain || `site-${site.id}`);
+  const ext = compress ? 'sql.gz' : 'sql';
+  const outputPath = opts.output || `./db-${siteLabel}-${isoTimestamp()}.${ext}`;
+  const outDir = dirname(outputPath);
+  if (outDir && outDir !== '.' && !existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+
+  const spin = spinner('Exporting database via API...');
+  spin.start();
+  let stdout = '';
+  try {
+    const r = await runViaApi(site.id, 'wp db export - | gzip | base64 -w0', {
+      timeoutSeconds: parseInt(opts.timeout || '300'),
+    });
+    if (r.exitCode !== 0) throw new Error(r.stdout || `run-cmd exit ${r.exitCode}`);
+    stdout = r.stdout.trim();
+  } catch (err: any) {
+    spin.fail('API export failed');
+    error(err.response?.data?.message || err.message);
+    process.exit(1);
+  }
+  if (!stdout) { spin.fail('Empty response from the API export'); process.exit(1); }
+
+  const gz = Buffer.from(stdout, 'base64');
+  // gzip magic (0x1f 0x8b) — if absent the remote command errored and returned text.
+  if (gz.length < 2 || gz[0] !== 0x1f || gz[1] !== 0x8b) {
+    spin.fail('API response was not a gzip stream (the remote command likely errored)');
+    error(stdout.slice(0, 300));
+    process.exit(1);
+  }
+  try {
+    writeFileSync(outputPath, compress ? gz : gunzipSync(gz));
+  } catch (err: any) {
+    spin.fail('Failed to write the dump');
+    error(err.message);
+    process.exit(1);
+  }
+  spin.succeed(`Database pulled via API → ${outputPath} (${formatBytes(statSync(outputPath).size)})`);
+  if (isJsonMode()) console.log(JSON.stringify({ success: true, data: { output: outputPath, transport: 'api' } }));
+  else info('--api streams the whole dump through one API response — best for small/medium DBs. For large DBs use SSH (set INSTAWP_SSH_HOST if the site is CDN-fronted).');
+}
+
+/**
+ * `db push --api`: upload a dump as chunked base64 over run-cmd and import it (no
+ * SSH). Takes a remote backup first (unless --no-backup) and can run --search-replace.
+ * Chunked round-trips make this suited to small/medium dumps; --incremental isn't
+ * supported over the API.
+ */
+async function dbPushViaApi(site: any, file: string, opts: any): Promise<void> {
+  if (opts.incremental) { error('--incremental requires the SSH transport (not --api).'); process.exit(1); }
+  if (!existsSync(file)) { error(`File not found: ${file}`); process.exit(1); }
+  if (opts.rewritePrefix) info('Note: --rewrite-prefix is applied to the local dump before upload (transport-agnostic).');
+
+  const timeoutSeconds = parseInt(opts.timeout || '300');
+  const isGz = file.endsWith('.gz');
+
+  if (!opts.force) {
+    if (isJsonMode()) { error('--force is required with --api in --json mode (cannot prompt before overwriting).'); process.exit(1); }
+    const ok = await promptYesNo(`This will OVERWRITE the database on ${site.name || site.sub_domain} via the API. Continue? (y/N) `);
+    if (!ok) { info('Cancelled.'); return; }
+  }
+
+  // Remote backup first (unless --no-backup) — mirrors the SSH path (backup on remote ~/).
+  const takeBackup = opts.backup !== false;
+  let backupName = '';
+  if (takeBackup) {
+    backupName = `db-backup-${isoTimestamp()}-${randomBytes(3).toString('hex')}.sql.gz`;
+    const bSpin = spinner(`Backing up remote DB to ~/${backupName} via API...`);
+    bSpin.start();
+    const r = await runViaApi(site.id, `wp db export - | gzip > ~/${backupName}`, { timeoutSeconds });
+    if (r.exitCode !== 0) { bSpin.fail('Remote backup failed — aborting'); if (r.stdout) error(r.stdout.slice(0, 300)); process.exit(1); }
+    bSpin.succeed(`Remote DB backed up: ~/${backupName}`);
+  } else {
+    info('Skipping remote DB backup (--no-backup).');
+  }
+
+  // Upload the dump as chunked base64 appended to a remote temp file.
+  const remoteTmp = `/tmp/iwp-import-${randomBytes(6).toString('hex')}.${isGz ? 'sql.gz' : 'sql'}`;
+  const b64 = readFileSync(file).toString('base64');
+  const chunks = chunkString(b64, 60000);
+  const cleanupRemote = async () => { try { await runViaApi(site.id, `rm -f '${remoteTmp}'`, { timeoutSeconds: 30 }); } catch { /* ignore */ } };
+
+  const upSpin = spinner(`Uploading dump via API (${chunks.length} chunk(s), ${formatBytes(statSync(file).size)})...`);
+  upSpin.start();
+  const t0 = await runViaApi(site.id, `: > '${remoteTmp}'`, { timeoutSeconds: 30 });
+  if (t0.exitCode !== 0) { upSpin.fail('Could not create the remote temp file'); process.exit(1); }
+  for (let i = 0; i < chunks.length; i++) {
+    const rc = await runViaApi(site.id, `printf '%s' '${chunks[i]}' | base64 -d >> '${remoteTmp}'`, { timeoutSeconds: 60 });
+    if (rc.exitCode !== 0) { upSpin.fail(`Chunk ${i + 1}/${chunks.length} failed`); if (rc.stdout) error(rc.stdout.slice(0, 300)); await cleanupRemote(); process.exit(1); }
+    upSpin.text = `Uploading dump via API (${i + 1}/${chunks.length})...`;
+  }
+  upSpin.succeed('Dump uploaded');
+
+  const impCmd = isGz ? `gunzip -c '${remoteTmp}' | wp db import -` : `wp db import '${remoteTmp}'`;
+  const impSpin = spinner('Importing via API...');
+  impSpin.start();
+  const ri = await runViaApi(site.id, impCmd, { timeoutSeconds });
+  if (ri.exitCode !== 0) {
+    impSpin.fail('Import failed');
+    if (ri.stdout) error(ri.stdout.slice(0, 500));
+    await cleanupRemote();
+    if (takeBackup) info(`Remote backup preserved at ~/${backupName}.`);
+    process.exit(1);
+  }
+  impSpin.succeed('Database imported');
+
+  // Optional URL search-replace (serialization-safe, via run-cmd).
+  if (Array.isArray(opts.searchReplace) && opts.searchReplace.length === 2) {
+    const [from, to] = opts.searchReplace;
+    if (isShellSafeUrl(from) && isShellSafeUrl(to)) {
+      const tables = Array.isArray(opts.srTables) && opts.srTables.length
+        ? opts.srTables.map((t: string) => `'${t}'`).join(' ')
+        : '--all-tables';
+      const srSpin = spinner(`Rewriting URLs (${from} → ${to})...`);
+      srSpin.start();
+      const rs = await runViaApi(site.id, `wp search-replace '${from}' '${to}' ${tables} --skip-columns=guid --report-changed-only`, { timeoutSeconds });
+      if (rs.exitCode === 0) srSpin.succeed('URLs rewritten'); else srSpin.fail('URL rewrite failed (DB imported; run search-replace manually)');
+    } else {
+      info('Skipped URL rewrite (unsafe URL).');
+    }
+  }
+
+  await runViaApi(site.id, 'wp cache flush', { timeoutSeconds: 60 });
+  await cleanupRemote();
+
+  if (isJsonMode()) {
+    console.log(JSON.stringify({ success: true, data: { transport: 'api', imported: true, backup: takeBackup ? backupName : null } }));
+  } else {
+    success('Database pushed via API!');
+    if (takeBackup) info(`Remote DB backup kept at ~/${backupName} (on the server).`);
+  }
 }
 
 async function gunzipFile(src: string, dest: string): Promise<void> {
@@ -57,7 +197,10 @@ function isShellSafeUrl(u: string): boolean {
 }
 
 /** Resolve a site and open an SSH connection (shared by the backups subcommands). */
-async function resolveAndConnect(siteIdentifier: string): Promise<{ site: any; conn: SshConnection }> {
+async function resolveAndConnect(
+  siteIdentifier: string,
+  sshOpts: { sshHost?: string; refresh?: boolean } = {},
+): Promise<{ site: any; conn: SshConnection }> {
   const rspin = spinner('Resolving site...');
   rspin.start();
   let site: any;
@@ -68,7 +211,7 @@ async function resolveAndConnect(siteIdentifier: string): Promise<{ site: any; c
     rspin.fail('Site resolution failed');
     process.exit(1);
   }
-  const conn = await ensureSshAccess(site.id);
+  const conn = await ensureSshAccess(site.id, sshOpts);
   return { site, conn };
 }
 
@@ -264,6 +407,10 @@ export function registerDbCommand(program: Command): void {
     .description('Pull remote MySQL database to a local SQL dump')
     .option('--output <path>', 'Output file path (default: ./db-<site>-<timestamp>.sql.gz)')
     .option('--no-compress', 'Write uncompressed .sql instead of .sql.gz')
+    .option('--api', 'Use the API transport (run-cmd) instead of SSH — for CDN-fronted sites with no reachable SSH')
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
+    .option('--timeout <seconds>', 'Per-command timeout for the --api transport (default 300)', '300')
     .action(async (siteIdentifier: string, opts: any) => {
       requireAuth();
 
@@ -278,7 +425,12 @@ export function registerDbCommand(program: Command): void {
         process.exit(1);
       }
 
-      const conn = await ensureSshAccess(site.id);
+      if (opts.api) {
+        await dbPullViaApi(site, opts);
+        return;
+      }
+
+      const conn = await ensureSshAccess(site.id, { sshHost: opts.sshHost, refresh: opts.refresh });
       const wpPath = `/home/${conn.username}/web/${conn.domain}/public_html`;
 
       const compress = opts.compress !== false;
@@ -343,6 +495,10 @@ export function registerDbCommand(program: Command): void {
     .option('--verify', 'After import, poll the site URL until it responds (large imports can briefly return 000)')
     .option('--incremental', 'Push only the row-level delta since the last push (auto-fulls on first run or schema change). Needs a per-row dump: mysqldump --skip-extended-insert --order-by-primary')
     .option('--full', 'Force a full push and refresh the incremental baseline')
+    .option('--api', 'Use the API transport (run-cmd, chunked base64) instead of SSH — for CDN-fronted sites. --incremental is not supported over --api.')
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
+    .option('--timeout <seconds>', 'Per-command timeout for the --api transport (default 300)', '300')
     .addHelpText('after', `
 Notes:
   - Always takes a remote backup first unless --no-backup is passed.
@@ -428,7 +584,12 @@ Examples:
         process.exit(1);
       }
 
-      const conn = await ensureSshAccess(site.id);
+      if (opts.api) {
+        await dbPushViaApi(site, file, opts);
+        return;
+      }
+
+      const conn = await ensureSshAccess(site.id, { sshHost: opts.sshHost, refresh: opts.refresh });
       const wpPath = `/home/${conn.username}/web/${conn.domain}/public_html`;
       const remoteHome = `/home/${conn.username}`;
 
@@ -709,9 +870,11 @@ Examples:
   backups
     .command('list <site>')
     .description('List the db-backup-*.sql.gz files on the remote site (newest first)')
-    .action(async (siteIdentifier: string) => {
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
+    .action(async (siteIdentifier: string, opts: any) => {
       requireAuth();
-      const { conn } = await resolveAndConnect(siteIdentifier);
+      const { conn } = await resolveAndConnect(siteIdentifier, { sshHost: opts.sshHost, refresh: opts.refresh });
       const list = listRemoteBackups(conn);
 
       if (isJsonMode()) {
@@ -737,6 +900,8 @@ Examples:
     .option('--keep <n>', 'Keep the newest N backups, delete the rest', (v) => parseInt(v, 10))
     .option('--older-than <days>', 'Delete backups older than this many days', (v) => parseInt(v, 10))
     .option('--force', 'Skip confirmation prompt')
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
     .action(async (siteIdentifier: string, opts: any) => {
       requireAuth();
       if (opts.keep === undefined && opts.olderThan === undefined) {
@@ -753,7 +918,7 @@ Examples:
         process.exit(1);
       }
 
-      const { conn } = await resolveAndConnect(siteIdentifier);
+      const { conn } = await resolveAndConnect(siteIdentifier, { sshHost: opts.sshHost, refresh: opts.refresh });
       const list = listRemoteBackups(conn);
       const { toDelete, toKeep } = selectBackupsToPrune(
         list,

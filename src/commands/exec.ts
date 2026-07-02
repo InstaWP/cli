@@ -4,10 +4,21 @@ import { requireAuth, getClient } from '../lib/api.js';
 import { resolveSite } from '../lib/site-resolver.js';
 import { ensureSshAccess } from '../lib/ssh-keys.js';
 import { execViaSsh, execViaSshStreamStdin } from '../lib/ssh-connection.js';
+import { SshUnreachableError } from '../lib/ssh-preflight.js';
 import { buildRemoteCommandString, sliceAfterMarker } from '../lib/remote-command.js';
-import { error, spinner, isJsonMode } from '../lib/output.js';
+import { error, info, spinner, isJsonMode } from '../lib/output.js';
 
-async function execAction(siteIdentifier: string, args: string[], opts: { api?: boolean; timeout?: string; shell?: boolean; stdin?: boolean }): Promise<void> {
+interface ExecOpts {
+  api?: boolean;
+  timeout?: string;
+  shell?: boolean;
+  stdin?: boolean;
+  sshHost?: string;
+  refresh?: boolean;
+  fallback?: boolean; // commander --no-fallback sets this false; default true
+}
+
+async function execAction(siteIdentifier: string, args: string[], opts: ExecOpts): Promise<void> {
   requireAuth();
 
   if (opts.stdin && opts.api) {
@@ -42,7 +53,15 @@ async function execAction(siteIdentifier: string, args: string[], opts: { api?: 
   if (opts.api) {
     await execViaApi(site, command, opts);
   } else {
-    await execViaSshTransport(site, command, { streamStdin: !!opts.stdin });
+    await execViaSshTransport(site, command, {
+      streamStdin: !!opts.stdin,
+      sshHost: opts.sshHost,
+      refresh: opts.refresh,
+      // wp/exec can transparently fall back to the API transport when SSH can't be
+      // reached (CDN-fronted site). --stdin has no API equivalent, so no fallback there.
+      canFallback: opts.fallback !== false && !opts.stdin,
+      onFallback: () => execViaApi(site, command, opts),
+    });
   }
 }
 
@@ -90,8 +109,26 @@ async function execViaApi(site: any, command: string, opts: { timeout?: string }
   }
 }
 
-async function execViaSshTransport(site: any, command: string, opts: { streamStdin?: boolean } = {}): Promise<void> {
-  const conn = await ensureSshAccess(site.id);
+async function execViaSshTransport(
+  site: any,
+  command: string,
+  opts: { streamStdin?: boolean; sshHost?: string; refresh?: boolean; canFallback?: boolean; onFallback?: () => Promise<void> } = {},
+): Promise<void> {
+  let conn;
+  try {
+    conn = await ensureSshAccess(site.id, {
+      sshHost: opts.sshHost,
+      refresh: opts.refresh,
+      onUnreachable: opts.canFallback ? 'throw' : 'exit',
+    });
+  } catch (err: any) {
+    if (err instanceof SshUnreachableError && opts.canFallback && opts.onFallback) {
+      info('SSH unreachable — falling back to the API transport. Use --no-fallback to disable.');
+      await opts.onFallback();
+      return;
+    }
+    throw err;
+  }
 
   // Auto-cd into WordPress root so wp-cli and other tools work out of the box
   const wpRoot = conn.domain
@@ -151,6 +188,9 @@ export function registerExecCommand(program: Command): void {
     .option('--shell', 'Run the args as one shell command line on the remote (enables pipes, ;, >, globs)')
     .option('--stdin', 'Stream local stdin to the remote command (for uploads / restore pipes; SSH only)')
     .option('--timeout <seconds>', 'Command timeout in seconds (API mode only)', '30')
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
+    .option('--no-fallback', 'Do not auto-fall-back to --api when SSH is unreachable')
     .addHelpText('after', `
 Examples:
   $ instawp exec my-site ls -la
@@ -164,21 +204,31 @@ arg is sent as one literal token. Use --shell (or '-- bash -lc "..."') to run a
 pipeline or compound command on the remote.
 `)
     .action(async (siteIdentifier: string, args: string[], opts) => {
-      // passThroughOptions may swallow --api/--shell/--stdin/--timeout into args — extract them
+      // passThroughOptions may swallow our flags into args — re-extract them.
       const extractedApi = args.includes('--api');
       const extractedShell = args.includes('--shell');
       const extractedStdin = args.includes('--stdin');
-      const timeoutIdx = args.indexOf('--timeout');
-      let extractedTimeout: string | undefined;
-      if (timeoutIdx !== -1 && args[timeoutIdx + 1]) {
-        extractedTimeout = args[timeoutIdx + 1];
-        args = args.filter((_, i) => i !== timeoutIdx && i !== timeoutIdx + 1);
-      }
-      args = args.filter(a => a !== '--api' && a !== '--shell' && a !== '--stdin');
+      const extractedRefresh = args.includes('--refresh');
+      const extractedNoFallback = args.includes('--no-fallback');
+      const extractValue = (flag: string): string | undefined => {
+        const i = args.indexOf(flag);
+        if (i !== -1 && args[i + 1]) {
+          const v = args[i + 1];
+          args = args.filter((_, idx) => idx !== i && idx !== i + 1);
+          return v;
+        }
+        return undefined;
+      };
+      const extractedTimeout = extractValue('--timeout');
+      const extractedSshHost = extractValue('--ssh-host');
+      args = args.filter(a => !['--api', '--shell', '--stdin', '--refresh', '--no-fallback'].includes(a));
       if (extractedApi) opts.api = true;
       if (extractedShell) opts.shell = true;
       if (extractedStdin) opts.stdin = true;
       if (extractedTimeout) opts.timeout = extractedTimeout;
+      if (extractedSshHost) opts.sshHost = extractedSshHost;
+      if (extractedRefresh) opts.refresh = true;
+      if (extractedNoFallback) opts.fallback = false;
       await execAction(siteIdentifier, args, opts);
     });
 }
@@ -206,6 +256,9 @@ export function registerWpCommand(program: Command): void {
     .allowUnknownOption()
     .option('--api', 'Use API transport instead of SSH')
     .option('--timeout <seconds>', 'Command timeout in seconds (API mode only)', '30')
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
+    .option('--no-fallback', 'Do not auto-fall-back to --api when SSH is unreachable')
     .addHelpText('after', `
 Examples:
   $ instawp wp my-site plugin list
@@ -216,17 +269,27 @@ Examples:
 Tip: wrap PHP/eval payloads in single quotes — args are shell-escaped automatically before being sent to the remote shell.
 `)
     .action(async (siteIdentifier: string, args: string[], opts) => {
-      // passThroughOptions may swallow --api/--timeout into args — extract them
+      // passThroughOptions may swallow our flags into args — re-extract them.
       const extractedApi = args.includes('--api');
-      const timeoutIdx = args.indexOf('--timeout');
-      let extractedTimeout: string | undefined;
-      if (timeoutIdx !== -1 && args[timeoutIdx + 1]) {
-        extractedTimeout = args[timeoutIdx + 1];
-        args = args.filter((_, i) => i !== timeoutIdx && i !== timeoutIdx + 1);
-      }
-      args = args.filter(a => a !== '--api');
+      const extractedRefresh = args.includes('--refresh');
+      const extractedNoFallback = args.includes('--no-fallback');
+      const extractValue = (flag: string): string | undefined => {
+        const i = args.indexOf(flag);
+        if (i !== -1 && args[i + 1]) {
+          const v = args[i + 1];
+          args = args.filter((_, idx) => idx !== i && idx !== i + 1);
+          return v;
+        }
+        return undefined;
+      };
+      const extractedTimeout = extractValue('--timeout');
+      const extractedSshHost = extractValue('--ssh-host');
+      args = args.filter(a => !['--api', '--refresh', '--no-fallback'].includes(a));
       if (extractedApi) opts.api = true;
       if (extractedTimeout) opts.timeout = extractedTimeout;
+      if (extractedSshHost) opts.sshHost = extractedSshHost;
+      if (extractedRefresh) opts.refresh = true;
+      if (extractedNoFallback) opts.fallback = false;
 
       await execAction(siteIdentifier, ['wp', ...args], opts);
     });

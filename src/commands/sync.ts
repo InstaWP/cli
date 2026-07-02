@@ -46,6 +46,8 @@ export function registerSyncCommand(program: Command): void {
     .option('--include <pattern...>', 'Include patterns')
     .option('--delete', 'Delete remote files that are absent locally (make remote MIRROR local)')
     .option('--yes', 'Skip the --delete confirmation prompt')
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
     .option('--dry-run', 'Show what would be transferred')
     .action(async (siteIdentifier: string, opts) => {
       requireAuth();
@@ -73,7 +75,7 @@ export function registerSyncCommand(program: Command): void {
         process.exit(1);
       }
 
-      const conn = await ensureSshAccess(site.id);
+      const conn = await ensureSshAccess(site.id, { sshHost: opts.sshHost, refresh: opts.refresh });
 
       const localPath = opts.path.endsWith('/') ? opts.path : opts.path + '/';
       const remotePath = buildRemotePath(conn, opts);
@@ -112,6 +114,8 @@ export function registerSyncCommand(program: Command): void {
     .option('--include <pattern...>', 'Include patterns')
     .option('--delete', 'Delete local files that are absent on the remote (make local MIRROR remote)')
     .option('--yes', 'Skip the --delete confirmation prompt')
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
     .option('--dry-run', 'Show what would be transferred')
     .action(async (siteIdentifier: string, opts) => {
       requireAuth();
@@ -139,7 +143,7 @@ export function registerSyncCommand(program: Command): void {
         process.exit(1);
       }
 
-      const conn = await ensureSshAccess(site.id);
+      const conn = await ensureSshAccess(site.id, { sshHost: opts.sshHost, refresh: opts.refresh });
 
       const localPath = opts.path.endsWith('/') ? opts.path : opts.path + '/';
       const remotePath = buildRemotePath(conn, opts);

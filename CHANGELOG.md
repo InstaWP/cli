@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.0.1-beta.29 (2026-07-02)
+
+### Fixed — SSH-backed commands hung ~2 min on CDN-fronted sites
+
+When a site is fronted by a CDN (Bunny), the platform API returns the proxied edge hostname — port 22 there is unreachable and the origin is never exposed — so every SSH-backed command (`sync`, `db`, `logs`, `ssh`, `plugin install`, `local`, `migrate push`, `wp`/`exec` in SSH mode) hung for ~2 minutes then failed with a raw `Operation timed out`.
+
+- **Origin-host override.** Point SSH at the true origin: env `INSTAWP_SSH_HOST` (global) or `INSTAWP_SSH_HOST_<siteId>` (per-site, wins over global), or the `--ssh-host <host>` flag on `sync`/`db`/`ssh`/`wp`/`exec`. The override beats the API host and is applied even to a stale cached (pre-cutover) host. `--refresh` drops the cached host and re-resolves (use once after the platform starts returning the origin).
+- **Fast-fail preflight.** Before any SSH/rsync/scp, the CLI TCP-probes `host:port` (~5s) and, if unreachable, replaces the 2-minute hang with an actionable diagnostic ("…likely behind a CDN…set INSTAWP_SSH_HOST / retry with --api / update the platform").
+- **`wp`/`exec` auto-fall-back to `--api`** when SSH is unreachable (gated by `--no-fallback`). The `run-cmd` API transport isn't behind the CDN.
+- **`db pull --api` / `db push --api`.** A non-SSH transport over `run-cmd` (base64+gzip round-trip; push chunks the dump and imports it, with a remote backup first and optional `--search-replace`). Best for small/medium DBs — one/many API round-trips, no streaming; `--timeout` overrides the per-call budget; `--incremental` isn't supported over `--api`. For large DBs use SSH (set `INSTAWP_SSH_HOST` if CDN-fronted).
+
+**Companion platform ticket (the real fix):** `update-ssh-status` / `sites/{id}/details` should return the SSH **origin** host/IP (e.g. `origin_ip`/`ssh_host`), not the CDN-fronted `sub_domain`. Once it does, the CLI prefers it and SSH works globally with no override. Until then the above are the mitigations.
+
+**Not yet included:** `sync --api` (a whole-tree per-file base64 loop over `run-cmd`) — deferred; use `INSTAWP_SSH_HOST` for file sync to CDN-fronted sites, or `db --api` + `wp --api` for DB/commands.
+
 ## 0.0.1-beta.28 (2026-07-02)
 
 ### Added — `cache purge`

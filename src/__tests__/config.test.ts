@@ -32,10 +32,38 @@ beforeEach(() => {
   // Reset env vars
   delete process.env.INSTAWP_TOKEN;
   delete process.env.INSTAWP_API_URL;
+  delete process.env.INSTAWP_SSH_HOST;
+  delete process.env.INSTAWP_SSH_HOST_2495716;
   config.clearConfig();
 });
 
 describe('config', () => {
+  describe('getSshHostOverride', () => {
+    it('returns null when no override env is set', () => {
+      expect(config.getSshHostOverride(2495716)).toBe(null);
+    });
+
+    it('returns the global INSTAWP_SSH_HOST when set', () => {
+      process.env.INSTAWP_SSH_HOST = 'origin.example.com';
+      expect(config.getSshHostOverride(2495716)).toBe('origin.example.com');
+    });
+
+    it('per-site INSTAWP_SSH_HOST_<id> wins over the global', () => {
+      process.env.INSTAWP_SSH_HOST = 'global.example.com';
+      process.env.INSTAWP_SSH_HOST_2495716 = 'per-site.example.com';
+      expect(config.getSshHostOverride(2495716)).toBe('per-site.example.com');
+      // a different site still gets the global
+      expect(config.getSshHostOverride(999)).toBe('global.example.com');
+    });
+
+    it('trims and ignores blank values', () => {
+      process.env.INSTAWP_SSH_HOST = '  spaced.example.com  ';
+      expect(config.getSshHostOverride(1)).toBe('spaced.example.com');
+      process.env.INSTAWP_SSH_HOST = '   ';
+      expect(config.getSshHostOverride(1)).toBe(null);
+    });
+  });
+
   describe('token management', () => {
     it('returns null when no token set', () => {
       expect(config.getToken()).toBeNull();

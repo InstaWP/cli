@@ -9,7 +9,9 @@ export function registerSshCommand(program: Command): void {
   program
     .command('ssh <site>')
     .description('Open an interactive SSH shell on a site')
-    .action(async (siteIdentifier: string) => {
+    .option('--ssh-host <host>', 'Override the SSH host (CDN-fronted sites; also via INSTAWP_SSH_HOST)')
+    .option('--refresh', 'Re-resolve SSH access, ignoring the cached host')
+    .action(async (siteIdentifier: string, opts: any) => {
       requireAuth();
 
       const spin = spinner('Resolving site...');
@@ -24,7 +26,7 @@ export function registerSshCommand(program: Command): void {
         process.exit(1);
       }
 
-      const conn = await ensureSshAccess(site.id);
+      const conn = await ensureSshAccess(site.id, { sshHost: opts.sshHost, refresh: opts.refresh });
 
       if (isJsonMode()) {
         console.log(JSON.stringify({

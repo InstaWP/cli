@@ -3,8 +3,9 @@ import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { getClient } from './api.js';
-import { getSshCache, setSshCache, clearSshCache } from './config.js';
+import { getSshCache, setSshCache, clearSshCache, getSshHostOverride } from './config.js';
 import { error, info, spinner } from './output.js';
+import { probeTcp, printSshUnreachable, SshUnreachableError } from './ssh-preflight.js';
 import type { SshConnection, SshKeyInfo } from '../types.js';
 
 const INSTAWP_DIR = path.join(homedir(), '.instawp');
@@ -71,16 +72,50 @@ function generateCliKey(): { privatePath: string; pubContent: string } {
   };
 }
 
-export async function ensureSshAccess(siteId: number): Promise<SshConnection> {
-  // 1. Check cache
-  const cached = getSshCache(siteId);
-  if (cached) {
-    // Verify the private key still exists
-    if (existsSync(cached.connection.privateKeyPath)) {
-      return cached.connection;
+export interface EnsureSshOptions {
+  /** Override the SSH host (from --ssh-host or INSTAWP_SSH_HOST*); beats the API host. */
+  sshHost?: string;
+  /** Drop any cached connection and re-resolve (e.g. after the platform starts returning the origin). */
+  refresh?: boolean;
+  /**
+   * On an unreachable host: 'exit' (default — print the diagnostic + exit 1) or
+   * 'throw' (SshUnreachableError, for callers like wp/exec that have an --api fallback).
+   */
+  onUnreachable?: 'exit' | 'throw';
+}
+
+export async function ensureSshAccess(siteId: number, opts: EnsureSshOptions = {}): Promise<SshConnection> {
+  const override = opts.sshHost?.trim() || getSshHostOverride(siteId);
+  if (opts.refresh) clearSshCache(siteId);
+
+  const connection = await resolveConnection(siteId, override);
+
+  // Preflight: fail fast (a few seconds) with an actionable diagnostic instead of
+  // the raw ~2-minute ssh/rsync connect timeout when the host is unreachable — the
+  // classic CDN-fronted-site symptom (proxied host, port 22 filtered).
+  if (!(await probeTcp(connection.host, connection.port, 5000))) {
+    if ((opts.onUnreachable ?? 'exit') === 'throw') {
+      throw new SshUnreachableError(connection.host, connection.port);
     }
-    clearSshCache(siteId);
+    printSshUnreachable(connection.host, connection.port);
+    process.exit(1);
   }
+  return connection;
+}
+
+async function resolveConnection(siteId: number, override: string | null): Promise<SshConnection> {
+  // 1. Check cache. Apply an override to the cached host too, so a pre-cutover CDN
+  //    host cached before the override was set can't linger.
+  const cached = getSshCache(siteId);
+  if (cached && existsSync(cached.connection.privateKeyPath)) {
+    if (override && cached.connection.host !== override) {
+      const conn = { ...cached.connection, host: override };
+      setSshCache(siteId, { connection: conn, cachedAt: Date.now() });
+      return conn;
+    }
+    return cached.connection;
+  }
+  if (cached) clearSshCache(siteId);
 
   const client = getClient();
   const spin = spinner('Setting up SSH access...');
@@ -234,6 +269,10 @@ export async function ensureSshAccess(siteId: number): Promise<SshConnection> {
     } catch {
       // Non-fatal; domain used only for rsync path
     }
+
+    // Origin-host override wins over the API host (which is the CDN edge for
+    // proxied sites and has no reachable port 22).
+    if (override) connection.host = override;
 
     setSshCache(siteId, { connection, cachedAt: Date.now() });
     spin.succeed('SSH access ready');

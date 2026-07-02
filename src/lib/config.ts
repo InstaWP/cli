@@ -29,6 +29,21 @@ export function getApiUrl(): string {
   return (process.env.INSTAWP_API_URL || config.get('api_url')) as string;
 }
 
+/**
+ * SSH/rsync host override for CDN-fronted sites. When a site is behind a CDN
+ * (Bunny), the platform API returns the proxied edge hostname — port 22 there is
+ * unreachable and the origin is never exposed — so every SSH-backed command hangs.
+ * This lets a dev point SSH at the true origin. Per-site `INSTAWP_SSH_HOST_<id>`
+ * wins over the global `INSTAWP_SSH_HOST`. Env-only, like getToken/getApiUrl —
+ * nothing is persisted. Returns null when neither is set.
+ */
+export function getSshHostOverride(siteId: number): string | null {
+  const perSite = process.env[`INSTAWP_SSH_HOST_${siteId}`];
+  if (perSite && perSite.trim()) return perSite.trim();
+  const global = process.env.INSTAWP_SSH_HOST;
+  return global && global.trim() ? global.trim() : null;
+}
+
 export function setToken(token: string): void {
   config.set('token', token);
 }

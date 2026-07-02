@@ -5,6 +5,9 @@ import { homedir } from 'node:os';
 // Track mock state
 let mockFiles: Record<string, string> = {};
 let mockSshCache: Record<string, any> = {};
+let mockReachable = true;            // controls the mocked TCP preflight
+let mockSshOverride: string | null = null; // controls getSshHostOverride
+const mockPrintUnreachable = vi.fn();
 const mockGet = vi.fn();
 const mockPost = vi.fn();
 
@@ -36,6 +39,18 @@ vi.mock('../lib/config.js', () => ({
     if (siteId !== undefined) delete mockSshCache[siteId];
     else mockSshCache = {};
   },
+  getSshHostOverride: () => mockSshOverride,
+}));
+
+vi.mock('../lib/ssh-preflight.js', () => ({
+  probeTcp: () => Promise.resolve(mockReachable),
+  printSshUnreachable: (...args: any[]) => mockPrintUnreachable(...args),
+  SshUnreachableError: class SshUnreachableError extends Error {
+    constructor(public host: string, public port: number) {
+      super(`Can't reach ${host}:${port}`);
+      this.name = 'SshUnreachableError';
+    }
+  },
 }));
 
 vi.mock('../lib/output.js', () => ({
@@ -62,6 +77,9 @@ const CLI_KEY_PUB = CLI_KEY_PATH + '.pub';
 beforeEach(() => {
   mockFiles = {};
   mockSshCache = {};
+  mockReachable = true;
+  mockSshOverride = null;
+  mockPrintUnreachable.mockClear();
   mockGet.mockReset();
   mockPost.mockReset();
   mockExit.mockClear();
@@ -190,6 +208,92 @@ describe('ssh-keys', () => {
 
       const result = await ensureSshAccess(401);
       expect(result.host).toBe('ok.com');
+    });
+
+    it('applies the SSH host override over the API host (CDN-fronted site)', async () => {
+      mockSshOverride = 'origin.internal.host';
+      mockFiles[CLI_KEY_PUB] = 'ssh-rsa AAAA== instawp-cli';
+      mockFiles[CLI_KEY_PATH] = 'private key';
+
+      mockGet.mockResolvedValueOnce({ data: { data: [] } }); // ssh-keys
+      mockPost.mockResolvedValueOnce({ data: { data: { id: 5 } } }); // upload key
+      // API returns the CDN edge host — the override must win.
+      mockPost.mockResolvedValueOnce({ data: { host: 'cdn-edge.instawp.site', username: 'u', port: 22, data: [] } });
+      mockPost.mockResolvedValueOnce({ data: {} }); // enable SFTP
+      mockPost.mockResolvedValueOnce({ data: {} }); // attach
+      mockGet.mockResolvedValueOnce({ data: { data: { site: { main_domain: 'cdn-edge.instawp.site' } } } });
+
+      const result = await ensureSshAccess(600);
+      expect(result.host).toBe('origin.internal.host');
+      // and the cache stores the overridden host
+      expect(mockSshCache[600].connection.host).toBe('origin.internal.host');
+    });
+
+    it('rewrites a stale cached (pre-cutover CDN) host when an override is set', async () => {
+      const stale = {
+        host: 'cdn-edge.instawp.site',
+        username: 'user1',
+        port: 22,
+        privateKeyPath: '/tmp/test_key',
+        siteId: 100,
+        domain: 'cdn-edge.instawp.site',
+      };
+      mockSshCache[100] = { connection: stale, cachedAt: Date.now() };
+      mockFiles['/tmp/test_key'] = 'private key';
+      mockSshOverride = 'origin.internal.host';
+
+      const result = await ensureSshAccess(100);
+      expect(result.host).toBe('origin.internal.host');
+      expect(mockSshCache[100].connection.host).toBe('origin.internal.host');
+      // No re-resolution needed — override applied to the cached entry.
+      expect(mockGet).not.toHaveBeenCalled();
+    });
+
+    it('--refresh drops the cache and re-resolves', async () => {
+      const cached = {
+        host: 'old.host', username: 'u', port: 22,
+        privateKeyPath: '/tmp/test_key', siteId: 100, domain: 'old.host',
+      };
+      mockSshCache[100] = { connection: cached, cachedAt: Date.now() };
+      mockFiles['/tmp/test_key'] = 'private key';
+      mockFiles[CLI_KEY_PUB] = 'ssh-rsa AAAA== instawp-cli';
+      mockFiles[CLI_KEY_PATH] = 'private key';
+
+      mockGet.mockResolvedValueOnce({ data: { data: [] } });
+      mockPost.mockResolvedValueOnce({ data: { data: { id: 5 } } });
+      mockPost.mockResolvedValueOnce({ data: { host: 'fresh.host', username: 'u', port: 22, data: [] } });
+      mockPost.mockResolvedValueOnce({ data: {} });
+      mockPost.mockResolvedValueOnce({ data: {} });
+      mockGet.mockResolvedValueOnce({ data: { data: { site: { main_domain: 'fresh.host' } } } });
+
+      const result = await ensureSshAccess(100, { refresh: true });
+      expect(result.host).toBe('fresh.host'); // re-resolved, not the cached 'old.host'
+    });
+
+    it('preflight failure: default mode prints the diagnostic and exits', async () => {
+      mockReachable = false;
+      const conn = {
+        host: 'unreachable.host', username: 'u', port: 22,
+        privateKeyPath: '/tmp/test_key', siteId: 100, domain: 'unreachable.host',
+      };
+      mockSshCache[100] = { connection: conn, cachedAt: Date.now() };
+      mockFiles['/tmp/test_key'] = 'private key';
+
+      await expect(ensureSshAccess(100)).rejects.toThrow('process.exit(1)');
+      expect(mockPrintUnreachable).toHaveBeenCalledWith('unreachable.host', 22);
+    });
+
+    it('preflight failure: onUnreachable=throw throws SshUnreachableError (for --api fallback)', async () => {
+      mockReachable = false;
+      const conn = {
+        host: 'unreachable.host', username: 'u', port: 22,
+        privateKeyPath: '/tmp/test_key', siteId: 100, domain: 'unreachable.host',
+      };
+      mockSshCache[100] = { connection: conn, cachedAt: Date.now() };
+      mockFiles['/tmp/test_key'] = 'private key';
+
+      await expect(ensureSshAccess(100, { onUnreachable: 'throw' })).rejects.toThrow(/Can't reach/);
+      expect(mockPrintUnreachable).not.toHaveBeenCalled();
     });
 
     it('exits when SSH details are incomplete', async () => {

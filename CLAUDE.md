@@ -179,9 +179,17 @@ The standalone-CLI replacement for the plugin's `wp instawp local push`. Mirrors
 - Uploads to InstaWP API, enables SSH+SFTP on site, attaches key
 - Caches connection details for 1 hour in conf store
 
+### SSH host resolution + CDN-fronted sites (`ensureSshAccess`)
+The SSH/rsync host comes from `POST /sites/{id}/update-ssh-status`. For a **CDN-fronted site** (Bunny) that host is the proxied edge hostname — port 22 is unreachable and the API never exposes the origin — so SSH commands would hang ~2 min. `ensureSshAccess(siteId, opts)` handles this:
+- **Override** (`opts.sshHost` from `--ssh-host`, else `getSshHostOverride()` = `INSTAWP_SSH_HOST_<id>` > `INSTAWP_SSH_HOST`) beats the API host and is applied to a cached host too (so a pre-cutover CDN host can't linger). `opts.refresh` clears the cache and re-resolves.
+- **Preflight**: `probeTcp(host, port, 5000)` (`lib/ssh-preflight.ts`) TCP-connects before returning. On failure it either prints the diagnostic + `process.exit(1)` (`onUnreachable:'exit'`, the default — all SSH commands get fast-fail for free) or throws `SshUnreachableError` (`onUnreachable:'throw'`) so `wp`/`exec` can catch it and auto-fall-back to `--api`.
+- **`--api` transport** (`lib/api-exec.ts` → `runViaApi`) drives `POST /sites/{id}/run-cmd` (the only non-SSH channel, not behind the CDN). `db pull/push --api` base64-round-trip the dump over it (single/chunked; small-medium DBs). `run-cmd` is request/response — no streaming/binary — so per-call `timeout` is raised past the axios 30s default. `sync --api` is NOT implemented (per-file base64 loop; deferred).
+- **Real fix** is platform-side: `update-ssh-status`/`details` should return the SSH origin (`origin_ip`/`ssh_host`), after which the override is unnecessary.
+- **Gotcha**: `wp`/`exec` use `passThroughOptions()`+`allowUnknownOption()` and re-extract flags from argv — a new SSH flag must be added to `.option()` AND the manual extraction block in `exec.ts`, or it's swallowed.
+
 ### Config storage
 - Uses `conf` package → `~/.config/instawp/config.json`
-- Env overrides: `INSTAWP_TOKEN`, `INSTAWP_API_URL`
+- Env overrides: `INSTAWP_TOKEN`, `INSTAWP_API_URL`, `INSTAWP_SSH_HOST` (+ per-site `INSTAWP_SSH_HOST_<siteId>`)
 - Stores: auth, SSH cache, site cache, team_id, local instances
 
 ## Vendored Dependencies
@@ -244,7 +252,7 @@ See `vendor/win32/NOTICE.md` for source + license (BusyBox is GPL-2.0).
 | `POST /api/v2/sites/{id}/purge-cache` | cache purge (CDN edge; 422 if no CDN) |
 | `POST /api/v2/sites/{id}/clear-object-cache` | cache purge --object (Redis; 422 if not enabled) |
 | `DELETE /api/v2/sites/{id}` | sites delete |
-| `POST /api/v2/sites/{id}/run-cmd` | exec --api, wp --api |
+| `POST /api/v2/sites/{id}/run-cmd` | exec --api, wp --api, db pull/push --api (non-SSH transport) |
 | `GET /api/v2/site-versions?site_id={id}` | versions list |
 | `POST /api/v2/site-versions` | versions create |
 | `PUT /api/v2/site-versions/{id}` | versions create (set `--name`) |
