@@ -1,4 +1,4 @@
-# Site controls — implementation spec (target: `0.0.1-beta.30`)
+# Site controls — implementation spec (target: an upcoming beta)
 
 New site-scoped commands to add to `@instawp/cli`, from an audit of the client-app
 `sites/{site}/…` endpoints (2026-07-02). Everything here is drivable by the CLI's

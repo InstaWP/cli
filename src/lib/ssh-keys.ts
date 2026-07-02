@@ -88,12 +88,24 @@ export async function ensureSshAccess(siteId: number, opts: EnsureSshOptions = {
   const override = opts.sshHost?.trim() || getSshHostOverride(siteId);
   if (opts.refresh) clearSshCache(siteId);
 
-  const connection = await resolveConnection(siteId, override);
+  const wasCached = !!getSshCache(siteId);
+  let connection = await resolveConnection(siteId, override);
 
   // Preflight: fail fast (a few seconds) with an actionable diagnostic instead of
   // the raw ~2-minute ssh/rsync connect timeout when the host is unreachable — the
   // classic CDN-fronted-site symptom (proxied host, port 22 filtered).
-  if (!(await probeTcp(connection.host, connection.port, 5000))) {
+  let reachable = await probeTcp(connection.host, connection.port, 5000);
+
+  // Self-heal a stale cached host (e.g. a CDN host cached before origin auto-detect
+  // shipped, or before the origin IP had synced): drop the cache and re-resolve once
+  // so site_meta.ip_addr is picked up — no manual --refresh needed.
+  if (!reachable && wasCached && !override) {
+    clearSshCache(siteId);
+    connection = await resolveConnection(siteId, override);
+    reachable = await probeTcp(connection.host, connection.port, 5000);
+  }
+
+  if (!reachable) {
     if ((opts.onUnreachable ?? 'exit') === 'throw') {
       throw new SshUnreachableError(connection.host, connection.port);
     }
@@ -270,9 +282,24 @@ async function resolveConnection(siteId: number, override: string | null): Promi
       // Non-fatal; domain used only for rsync path
     }
 
-    // Origin-host override wins over the API host (which is the CDN edge for
-    // proxied sites and has no reachable port 22).
+    // Auto-resolve the SSH ORIGIN. `update-ssh-status` returns the site's public
+    // hostname — for a CDN-fronted site that's the proxied edge (port 22 filtered),
+    // so SSH to it hangs. The real origin server IP lives in `site_meta.ip_addr`
+    // (exactly what InstaWP's own SSH bridge uses: `ip_addr ?? sub_domain`), and
+    // GET /sites/{id}/credentials exposes it to an owner token. Prefer it so SSH
+    // works on CDN-fronted sites with NO manual override.
+    let originIp = '';
+    try {
+      const credRes = await client.get(`/sites/${siteId}/credentials`);
+      originIp = credRes.data?.data?.ip_addr || '';
+    } catch {
+      // Older API / no view permission — fall back to the API host below.
+    }
+
+    // Host precedence: explicit override (--ssh-host / INSTAWP_SSH_HOST) >
+    // auto-detected origin IP > the API host (CDN edge / sub_domain).
     if (override) connection.host = override;
+    else if (originIp) connection.host = originIp;
 
     setSshCache(siteId, { connection, cachedAt: Date.now() });
     spin.succeed('SSH access ready');

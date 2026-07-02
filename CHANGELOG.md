@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.0.1-beta.30 (2026-07-02)
+
+### Fixed — CLI auto-resolves the SSH origin for CDN-fronted sites (no env var needed)
+
+beta.29 made SSH fail fast on CDN-fronted sites but still required `INSTAWP_SSH_HOST=<origin>`. The CLI now figures out the origin itself:
+
+- **`ensureSshAccess` prefers the origin IP from `site_meta.ip_addr`** (via `GET /sites/{id}/credentials`) over the `update-ssh-status` host, which for a CDN-fronted site is the proxied edge (port 22 filtered). This is exactly what InstaWP's own SSH bridge does (`ip_addr ?? sub_domain`). Verified end-to-end against a real CDN-fronted site: it now resolves the reachable origin and connects with no override.
+- **Host precedence:** explicit override (`--ssh-host` / `INSTAWP_SSH_HOST`) > auto-detected origin IP > API host.
+- **Self-heal:** if a *cached* host fails preflight (e.g. a CDN host cached before this shipped), the cache is dropped and re-resolved automatically — no manual `--refresh` needed.
+
+`INSTAWP_SSH_HOST` / `--ssh-host` remain as a manual override for sites where the API doesn't expose `ip_addr`.
+
 ## 0.0.1-beta.29 (2026-07-02)
 
 ### Fixed — SSH-backed commands hung ~2 min on CDN-fronted sites

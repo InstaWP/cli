@@ -41,8 +41,8 @@ export function probeTcp(host: string, port: number, timeoutMs = 5000): Promise<
   });
 }
 
-/** Print the actionable "site is behind a CDN" diagnostic for an unreachable host. */
+/** Print the actionable diagnostic for an unreachable SSH host. */
 export function printSshUnreachable(host: string, port: number): void {
-  error(`Can't reach ${host}:${port} over SSH — this site is likely behind a CDN and the platform API doesn't expose the origin host.`);
-  info('Fixes: retry with --api (wp/exec/db), set INSTAWP_SSH_HOST=<origin-host> (or INSTAWP_SSH_HOST_<siteId>=<host>), or ask the platform to return the origin. After the platform is fixed, pass --refresh once to drop the cached host.');
+  error(`Can't reach ${host}:${port} over SSH — the resolved origin isn't reachable from here (the API may not have exposed the origin IP for this site).`);
+  info('Fixes: retry with --api (wp/exec/db), set INSTAWP_SSH_HOST=<origin-host> (or INSTAWP_SSH_HOST_<siteId>=<host>) to override, or pass --refresh to re-resolve (e.g. if the origin was cached before it was available).');
 }
