@@ -16,6 +16,7 @@ import { registerTeamsCommand } from './commands/teams.js';
 import { registerLocalCommand } from './commands/local.js';
 import { registerMigrateCommand } from './commands/migrate.js';
 import { registerDbCommand } from './commands/db.js';
+import { registerCacheCommand } from './commands/cache.js';
 import { registerOpenCommand } from './commands/open.js';
 import { registerLogsCommand } from './commands/logs.js';
 import { registerUpgradeCommand } from './commands/upgrade.js';
@@ -56,6 +57,7 @@ registerSqlCommand(program);
 registerSshCommand(program);
 registerSyncCommand(program);
 registerDbCommand(program);
+registerCacheCommand(program);
 registerPluginCommand(program);
 registerLogsCommand(program);
 registerOpenCommand(program);
@@ -123,6 +125,7 @@ ${d('Remote Access')}
   ${c('ssh')}    ${d('<site>')}         Interactive SSH session
   ${c('sync')}   ${d('push|pull')}      Sync wp-content via rsync
   ${c('db')}     ${d('push|pull')}      Push/pull MySQL database (auto-backup)
+  ${c('cache purge')} ${d('<site>')}      Purge the site CDN cache (--object: object cache too)
   ${c('logs')}   ${d('<site>')}         Tail WP / PHP / nginx logs
   ${c('exec')}   ${d('<site>')} ${d('<cmd>')}  Run arbitrary shell (escape hatch for non-WP)
   ${c('sql')}    ${d('<site>')} ${d('<query>')} Run SQL via WP-CLI (hits MySQL, cache-immune)

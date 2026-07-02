@@ -66,6 +66,7 @@ instawp wp <site> <args...> [--api]           # WP-CLI on the site
 instawp ssh <site>                            # Interactive shell
 instawp sync push <site> [--path] [--exclude] [--dry-run]
 instawp sync pull <site> [--path] [--exclude] [--dry-run]
+instawp cache purge <site> [--object]                  # purge CDN edge cache (+ object cache)
 instawp db push <site> <file> [--force] [--no-backup]
 instawp db pull <site> [--output <path>] [--no-compress]
 instawp logs <site> [--wp] [--php] [--nginx] [--follow] [--lines <n>]
@@ -240,6 +241,8 @@ See `vendor/win32/NOTICE.md` for source + license (BusyBox is GPL-2.0).
 | `GET /api/v2/sites/{id}/details` | site resolver |
 | `POST /api/v2/sites` | sites create, local push (auto-create), migrate push (new site) |
 | `PUT /api/v2/sites/{id}/restore-raw` | migrate push (server-side restore of uploaded zip+sql) |
+| `POST /api/v2/sites/{id}/purge-cache` | cache purge (CDN edge; 422 if no CDN) |
+| `POST /api/v2/sites/{id}/clear-object-cache` | cache purge --object (Redis; 422 if not enabled) |
 | `DELETE /api/v2/sites/{id}` | sites delete |
 | `POST /api/v2/sites/{id}/run-cmd` | exec --api, wp --api |
 | `GET /api/v2/site-versions?site_id={id}` | versions list |

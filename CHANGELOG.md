@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.1-beta.28 (2026-07-02)
+
+### Added — `cache purge`
+
+- **`instawp cache purge <site>`** purges the site's **CDN edge cache** (the CLI equivalent of the dashboard "Purge Cache" button; `POST /sites/{id}/purge-cache`). **`--object`** additionally clears the server object cache (Redis; `POST /sites/{id}/clear-object-cache`). Both features are plan-gated — when absent the CLI reports a "skipped" no-op (not an error) and points to `instawp wp <site> cache flush` for the WordPress-level object cache.
+
 ## 0.0.1-beta.27 (2026-06-29)
 
 ### Fixed — `sync push`/`pull` include/exclude ordering (#18)

@@ -105,6 +105,17 @@ describe('command registration', () => {
     expect(optNames).toContain('--dry-run');
   });
 
+  it('registers cache command with a purge subcommand + --object', async () => {
+    const { registerCacheCommand } = await import('../commands/cache.js');
+    const program = new Command();
+    registerCacheCommand(program);
+    const cache = program.commands.find(c => c.name() === 'cache');
+    expect(cache).toBeDefined();
+    const purge = cache!.commands.find(c => c.name() === 'purge');
+    expect(purge).toBeDefined();
+    expect(purge!.options.map(o => o.long)).toContain('--object');
+  });
+
   it('registers wp command from exec module', async () => {
     const { registerWpCommand } = await import('../commands/exec.js');
     const program = new Command();
