@@ -60,7 +60,10 @@ export async function checkPlaygroundConnectivity(): Promise<string | null> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
-    await fetch('https://downloads.w.org', { signal: controller.signal, method: 'HEAD' });
+    // redirect:'manual' — downloads.w.org 302-redirects to wordpress.org/download/. Following it is
+    // fragile (HEAD-follow fails on some networks; GET-follow downloads the whole target and times out),
+    // so we don't follow: any response (incl. the 302) proves the host is reachable, which is all we test.
+    await fetch('https://downloads.w.org', { signal: controller.signal, method: 'HEAD', redirect: 'manual' });
     clearTimeout(timer);
     return null;
   } catch {
@@ -68,7 +71,7 @@ export async function checkPlaygroundConnectivity(): Promise<string | null> {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
-      await fetch('https://downloads.wordpress.org', { signal: controller.signal, method: 'HEAD' });
+      await fetch('https://downloads.wordpress.org', { signal: controller.signal, method: 'HEAD', redirect: 'manual' });
       clearTimeout(timer);
       return 'downloads.w.org is unreachable from your network (downloads.wordpress.org works).\n' +
         'WordPress Playground CLI requires access to downloads.w.org.\n' +
