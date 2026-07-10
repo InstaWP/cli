@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.0.1-beta.32 (2026-07-10)
+
+### Fixed — `local create` no longer false-fails the network check on valid connections
+
+`instawp local create` could abort with **"Cannot reach WordPress download servers"** on networks that actually have working connectivity.
+
+- The connectivity probe (`checkPlaygroundConnectivity`) HEAD-fetched `downloads.w.org`, which **302-redirects** to `wordpress.org/download/`. `fetch` follows redirects by default, and *following* that redirect is the fragile part — on some networks the HEAD-follow throws, and a GET-follow downloads the whole target page and times out. `curl -I` and `https.get()` work precisely because neither follows the redirect.
+- Both reachability probes now pass `redirect: 'manual'`, so any response — including the 302 — proves the host is reachable, which is all the check needs. No behaviour change on genuinely unreachable networks (a real connection failure still throws and reports the error).
+
 ## 0.0.1-beta.31 (2026-07-02)
 
 ### Fixed — remote docroot resolved from the server (domain-cutover sites)

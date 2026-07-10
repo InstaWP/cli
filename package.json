@@ -1,6 +1,6 @@
 {
   "name": "@instawp/cli",
-  "version": "0.0.1-beta.31",
+  "version": "0.0.1-beta.32",
   "description": "InstaWP CLI - Create and manage WordPress sites from the terminal",
   "type": "module",
   "bin": {
