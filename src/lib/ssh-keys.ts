@@ -13,6 +13,9 @@ const INSTAWP_DIR = path.join(homedir(), '.instawp');
 const CLI_KEY_PATH = path.join(INSTAWP_DIR, 'cli_key');
 const CLI_KEY_PUB_PATH = CLI_KEY_PATH + '.pub';
 
+const KEY_PAGE_SIZE = 100;   // per_page for GET /ssh-keys (API default is 10)
+const MAX_KEY_PAGES = 20;    // hard stop, so a bad `meta` can't spin forever
+
 function ensureInstawpDir(): void {
   if (!existsSync(INSTAWP_DIR)) {
     mkdirSync(INSTAWP_DIR, { recursive: true });
@@ -71,6 +74,42 @@ function generateCliKey(): { privatePath: string; pubContent: string } {
     privatePath: CLI_KEY_PATH,
     pubContent: readFileSync(CLI_KEY_PUB_PATH, 'utf-8').trim(),
   };
+}
+
+/**
+ * Every SSH key on the account, across all pages.
+ *
+ * `GET /ssh-keys` is paginated (10/page by default, newest first) and we only ever read
+ * page 1 — so on an account with more keys than that, an already-uploaded CLI key is
+ * invisible, we conclude "not uploaded", and upload ANOTHER copy of it. Since the SSH
+ * connection cache is per-site, that repeats for every site the user touches: the "InstaWP
+ * CLI" key piles up in their account. Ask for a big page and follow `meta.last_page`, so
+ * matching sees the whole list.
+ */
+async function fetchUploadedKeys(): Promise<SshKeyInfo[]> {
+  const client = getClient();
+  const keys: SshKeyInfo[] = [];
+
+  try {
+    for (let page = 1; page <= MAX_KEY_PAGES; page++) {
+      const res = await client.get('/ssh-keys', { params: { per_page: KEY_PAGE_SIZE, page } });
+      const items = res.data?.data;
+      if (!Array.isArray(items)) break;
+
+      for (const k of items) {
+        keys.push({ id: k.id, label: k.label || '', ssh_key: k.ssh_key || '' });
+      }
+
+      const lastPage = Number(res.data?.meta?.last_page);
+      if (!Number.isFinite(lastPage) || page >= lastPage) break;
+    }
+  } catch {
+    // SSH keys endpoint might not exist / transient failure — fall through with whatever
+    // we got. An empty list means step 5 uploads; the API is idempotent on identical key
+    // material, so that can't duplicate an existing key.
+  }
+
+  return keys;
 }
 
 export interface EnsureSshOptions {
@@ -148,18 +187,8 @@ async function resolveConnection(siteId: number, override: string | null): Promi
     // 2. Find local keys
     let localKeys = findLocalPubKeys();
 
-    // 3. Fetch uploaded keys from API
-    let uploadedKeys: SshKeyInfo[] = [];
-    try {
-      const res = await client.get('/ssh-keys');
-      uploadedKeys = (res.data?.data || []).map((k: any) => ({
-        id: k.id,
-        label: k.label || '',
-        ssh_key: k.ssh_key || '',
-      }));
-    } catch {
-      // SSH keys endpoint might not exist; proceed to upload
-    }
+    // 3. Fetch uploaded keys from API (every page — see fetchUploadedKeys)
+    const uploadedKeys = await fetchUploadedKeys();
 
     // 4. Find a matching key (local key already uploaded)
     let matchedKey: { privatePath: string; keyId: number } | null = null;

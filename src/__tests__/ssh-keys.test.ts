@@ -176,6 +176,44 @@ describe('ssh-keys', () => {
       expect(uploadCalls.length).toBe(0);
     });
 
+    it('matches a key that is not on the first page of the account key list', async () => {
+      // Regression: the key list is paginated (10/page by default, newest first). Reading only
+      // page 1 made an already-uploaded key look missing on key-heavy accounts, so the CLI
+      // uploaded a duplicate of its own key — once per site.
+      mockFiles[CLI_KEY_PUB] = 'ssh-rsa AAAACLIKEY== instawp-cli';
+      mockFiles[CLI_KEY_PATH] = 'private key';
+
+      // API: ssh-keys page 1 — someone else's newer keys, ours isn't here
+      mockGet.mockResolvedValueOnce({
+        data: {
+          data: [{ id: 1, label: 'Laptop', ssh_key: 'ssh-rsa AAAAOTHER== laptop' }],
+          meta: { current_page: 1, last_page: 2 },
+        },
+      });
+      // API: ssh-keys page 2 — the CLI key we uploaded ages ago
+      mockGet.mockResolvedValueOnce({
+        data: {
+          data: [{ id: 7, label: 'InstaWP CLI', ssh_key: 'ssh-rsa AAAACLIKEY== instawp-cli' }],
+          meta: { current_page: 2, last_page: 2 },
+        },
+      });
+      // API: enable SSH
+      mockPost.mockResolvedValueOnce({ data: { host: 'paged.com', username: 'paged', port: 22, data: [] } });
+      // API: enable SFTP
+      mockPost.mockResolvedValueOnce({ data: {} });
+      // API: attach key
+      mockPost.mockResolvedValueOnce({ data: {} });
+      // API: site details
+      mockGet.mockResolvedValueOnce({ data: { data: { site: { main_domain: 'paged.com' } } } });
+
+      const result = await ensureSshAccess(250);
+      expect(result.host).toBe('paged.com');
+      // No duplicate upload...
+      expect(mockPost.mock.calls.filter((c: any[]) => c[0] === '/ssh-keys').length).toBe(0);
+      // ...and the existing key (id 7, from page 2) is the one attached to the site
+      expect(mockPost.mock.calls.some((c: any[]) => c[0] === '/sites/250/ssh-keys/7')).toBe(true);
+    });
+
     it('exits on 403 when SSH requires paid plan', async () => {
       mockFiles[CLI_KEY_PUB] = 'ssh-rsa AAAA== instawp-cli';
       mockFiles[CLI_KEY_PATH] = 'private key';
