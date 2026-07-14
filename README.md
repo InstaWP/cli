@@ -17,7 +17,7 @@ InstaWP CLI is the connective tissue between your terminal, your InstaWP account
 - **🤖 Give an AI agent a real WordPress, then ship it** — Claude Code / Cursor gets a genuine WP sandbox (WASM PHP + SQLite, zero setup), builds against it, and deploys to a live site:
   ```bash
   instawp local create --name app     # real WordPress on your laptop, no Docker
-  instawp local push app              # provisions a cloud site + deploys it
+  instawp local deploy app            # provisions a cloud site + pushes files AND database
   ```
 - **🌉 Run WP-CLI on any site — no SSH** — pipes WP-CLI over HTTPS, so it works behind firewalls and in CI, addressed by name:
   ```bash
@@ -122,6 +122,10 @@ instawp local clone <cloud-site>
 instawp local start [name]
 instawp local stop [name]
 
+# Deploy a local site to the cloud in one shot (creates the site, pushes files + DB)
+instawp local deploy <local-name>                       # alias of `local push` — the one-command "make this live"
+instawp local deploy <local-name> --no-db               # files only — the new site keeps its empty WordPress DB
+
 # Sync between local and cloud
 instawp local push <local-name> [cloud-site]            # push wp-content (files) up; pushes back to the cloned origin by default
 instawp local push <local-name> --with-db               # ALSO overwrite the cloud database with your local one (backs it up first)
@@ -133,7 +137,9 @@ instawp local list
 instawp local delete <name> --force
 ```
 
-**Files vs. database:** `local push` syncs **files** (`wp-content`) by default — so plugins/themes/uploads, but **not** content like pages or posts (those live in the database). Add **`--with-db`** to also overwrite the cloud database with your local one. It backs up the cloud DB first, converts the local Playground SQLite to MySQL (data-only — it reuses the cloud's existing schema), imports it, and rewrites local→cloud URLs (serialization-safe). Best used on a cloned site, where local and cloud schemas match; tables that exist only locally (e.g. a plugin's custom tables created after cloning) are reported and skipped. Use `--dry-run` to preview, `--no-backup` to skip the safety backup (not recommended).
+**Deploying vs. syncing.** With no cloud site given (and no cloned origin), `local push` — or its alias **`local deploy`** — *provisions* the cloud site for you and pushes **files + database**, so a site you built locally goes live in one command. Pushing into an **existing** site is the opposite default: files only, because overwriting a live database is destructive. Add `--with-db` to include it there, or `--no-db` to keep a deploy files-only.
+
+**Files vs. database:** `local push` into an existing site syncs **files** (`wp-content`) — so plugins/themes/uploads, but **not** content like pages or posts (those live in the database). Add **`--with-db`** to also overwrite the cloud database with your local one. It backs up the cloud DB first, converts the local Playground SQLite to MySQL (data-only — it reuses the cloud's existing schema), imports it, and rewrites local→cloud URLs (serialization-safe). Best used on a cloned site, where local and cloud schemas match; tables that exist only locally (e.g. a plugin's custom tables created after cloning) are reported and skipped. Use `--dry-run` to preview, `--no-backup` to skip the safety backup (not recommended).
 
 ### Run Commands (WP-CLI + shell)
 

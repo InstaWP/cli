@@ -136,13 +136,15 @@ ${d('Local Development')}
   ${c('local clone')}        Clone an InstaWP cloud site to local
   ${c('local start')}        Start an existing local site
   ${c('local stop')}         Stop a background local site
-  ${c('local push')}         Push local wp-content to InstaWP cloud
+  ${c('local push')}         Push a local site up (creates the cloud site if none given)
+  ${d('(alias: local deploy — files + database, one shot)')}
   ${c('local pull')}         Pull cloud wp-content to local site
   ${c('local list')}         List local sites
   ${c('local delete')}       Delete a local site
 
 ${d('Migration')}
-  ${c('migrate push')}  ${d('[path]')}   Mirror a local WP install to a new hosted InstaWP site
+  ${c('migrate push')}  ${d('[path]')}   Mirror an on-disk WP install (LocalWP, Docker, MAMP…) to a new hosted site
+  ${d('(for a `local create` site use `local deploy` instead)')}
 
 ${d('Teams')}
   ${c('teams list')}         List teams
@@ -157,6 +159,7 @@ ${d('Examples')}
   $ instawp login
   $ instawp create --name my-site
   $ instawp local create --name blog
+  $ instawp local deploy blog
   $ instawp wp my-site plugin list
   $ instawp wp my-site -- post list --post_type=page
   $ instawp versions create my-site --name "before plugin update"

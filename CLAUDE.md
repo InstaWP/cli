@@ -87,7 +87,7 @@ instawp local create [--name <n>] [--wp <v>] [--php <v>] [--background] [--no-op
 instawp local clone <cloud-site> [--name <n>] [--no-start]
 instawp local start [name] [--background] [--no-open]
 instawp local stop [name]
-instawp local push <local-name> [cloud-site] [--dry-run]
+instawp local push|deploy <local-name> [cloud-site] [--with-db] [--no-db] [--no-backup] [--force] [--dry-run]
 instawp local pull <local-name> <cloud-site> [--dry-run]
 instawp local list
 instawp local delete <name> [--force]
@@ -139,13 +139,20 @@ All commands support `--json` for machine-readable output.
 9. Generate blueprint with `WP_SQLITE_AST_DRIVER=true` + `login` step with actual admin username
 10. Write error suppression mu-plugin
 
-### DB push flow (`local push --with-db`) — SQLite → MySQL (the reverse of clone)
+### One-shot deploy (`local push` with no target, alias `local deploy`)
+When `pushTargetRef()` yields no site (no cloud-site arg, not a cloned instance), `local push` **provisions** one (`POST /sites`, `is_reserved: true`, poll the task) and links it to the instance. Two rules follow from "this command created the site", both decided by `shouldPushDb()` (`lib/local-instance.ts`) + the `freshSite` flag passed into `pushDatabase()`:
+- **The DB rides along by default.** Files-only would strand the user on a brand-new site with none of their pages/posts/settings. Pushing into an **existing** site keeps the DB opt-in (`--with-db`) — that overwrites live data. `--no-db` always wins.
+- **No overwrite prompt, no safety backup.** The DB being replaced is the untouched WordPress default from seconds ago; confirming it and `wp db export`-ing it are pure cost. (Both guards stay fully in force for an existing site.)
+
+`local deploy` is a commander `.alias()` on the same command — the discoverable verb for "make my local site live". Not to be confused with `migrate push`, which mirrors an **on-disk** WP install (MySQL + `wp-config.php`) and cannot read a Playground SQLite instance.
+
+### DB push flow (`local push --with-db`, and every site-creating push) — SQLite → MySQL (the reverse of clone)
 Pushes the local Playground DB back to the cloud MySQL, OVERWRITING it. Implemented in `pushDatabase()` (`commands/local.ts`) + `lib/sqlite-to-mysql.ts`.
 1. Read local siteurl from `wp_options` (authoritative; handles port drift)
 2. Discover cloud `table_prefix` + existing tables via SSH — **MOTD-stripped** (`parseTablePrefix`/`parseSqlTableNames` in `lib/local-instance.ts`); a banner leaking in would mismatch every table → silent empty push
 3. `generateMysqlDump()`: **data-only** (`TRUNCATE`+`INSERT`, no `CREATE TABLE`) for local `wp_*` tables whose cloud-prefixed name exists on the cloud (intersection — so a missing-table TRUNCATE can't abort the import). Pins `sql_mode` (backslash escaping), `safeIntegers(true)` (no >2^53 loss), BLOB→`0x` hex (empty→`''`), byte-budgeted INSERT batching
 4. Refuse if 0 tables intersect (fail loud, never a silent no-op)
-5. Back up cloud DB (`wp db export | gzip`), abort if it fails (unless `--no-backup`)
+5. Back up cloud DB (`wp db export | gzip`), abort if it fails (unless `--no-backup`, or the push just created the site — nothing to protect)
 6. scp upload → `wp db import`
 7. If cloud prefix ≠ `wp_`: remap role/capability keys to the cloud prefix — `{prefix}capabilities`, `{prefix}user_level` (usermeta), `{prefix}user_roles` (options). Local is `wp_`-normalized, so without this the admin loses all capabilities and **wp-admin becomes inaccessible** (most InstaWP sites use a random prefix). Exact key names only — never touches plugin options.
 8. `wp search-replace <local-url> <cloud-url>` (serialization-safe — NOT done in SQL) → `wp cache flush`

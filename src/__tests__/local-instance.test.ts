@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sanitizeName, defaultInstanceName, pushTargetRef, parseTablePrefix, parseSqlTableNames } from '../lib/local-instance.js';
+import { sanitizeName, defaultInstanceName, pushTargetRef, shouldPushDb, parseTablePrefix, parseSqlTableNames } from '../lib/local-instance.js';
 
 describe('sanitizeName', () => {
   it('lowercases and replaces non [a-z0-9_-] with -', () => {
@@ -45,6 +45,26 @@ describe('pushTargetRef', () => {
   it('treats a blank arg as no arg, deferring to the origin', () => {
     expect(pushTargetRef('   ', { cloudSiteId: 7 })).toBe('7');
     expect(pushTargetRef('  ', {})).toBeUndefined();
+  });
+});
+
+describe('shouldPushDb', () => {
+  // commander's --no-db default: `db` is true unless the user passes --no-db.
+  const base = { db: true };
+
+  it('pushes the DB by default when this push creates the site', () => {
+    expect(shouldPushDb(base, true)).toBe(true);
+  });
+
+  it('keeps the DB opt-in when pushing into an existing site', () => {
+    expect(shouldPushDb(base, false)).toBe(false);
+    expect(shouldPushDb({ ...base, withDb: true }, false)).toBe(true);
+  });
+
+  it('lets --no-db win over both the auto-include and an explicit --with-db', () => {
+    expect(shouldPushDb({ db: false }, true)).toBe(false);
+    expect(shouldPushDb({ db: false, withDb: true }, true)).toBe(false);
+    expect(shouldPushDb({ db: false, withDb: true }, false)).toBe(false);
   });
 });
 
