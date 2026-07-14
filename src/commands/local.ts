@@ -32,7 +32,7 @@ import { resolveSite } from '../lib/site-resolver.js';
 import { ensureSshAccess } from '../lib/ssh-keys.js';
 import { syncFiles, execViaSsh, execViaSshToFile, scpUpload } from '../lib/ssh-connection.js';
 import { listLocalFiles } from '../lib/sftp-sync.js';
-import { sanitizeName, defaultInstanceName, pushTargetRef, parseTablePrefix, parseSqlTableNames } from '../lib/local-instance.js';
+import { sanitizeName, defaultInstanceName, pushTargetRef, shouldPushDb, parseTablePrefix, parseSqlTableNames } from '../lib/local-instance.js';
 import { generateMysqlDump } from '../lib/sqlite-to-mysql.js';
 import { success, error, table, spinner, info, isJsonMode } from '../lib/output.js';
 import type { LocalInstance, SshConnection } from '../types.js';
@@ -221,13 +221,15 @@ export function registerLocalCommand(program: Command): void {
         success(`Instance "${name}" deleted.`);
       }
     });
-  // local push <local-name> [cloud-site]
+  // local push <local-name> [cloud-site]   (alias: local deploy)
   local
     .command('push <local-name> [cloud-site]')
-    .description('Push local wp-content to an InstaWP cloud site')
+    .alias('deploy')
+    .description('Push a local site to InstaWP cloud — creates the cloud site (files + database) if no cloud-site is given')
     .option('--include <pattern...>', 'Include patterns (e.g. .git)')
     .option('--exclude <pattern...>', 'Additional exclude patterns')
-    .option('--with-db', 'Also push the local database, OVERWRITING the cloud DB (backs it up first)')
+    .option('--with-db', 'Push the local database too, OVERWRITING the cloud DB (backs it up first). Implied when creating the site')
+    .option('--no-db', 'Files only — do not push the database')
     .option('--no-backup', 'With --with-db: skip the cloud DB backup before overwrite (DANGEROUS)')
     .option('--force', 'With --with-db: skip the overwrite confirmation prompt')
     .option('--dry-run', 'Show what would be transferred')
@@ -248,6 +250,12 @@ export function registerLocalCommand(program: Command): void {
       // remembers its origin and pushes back to it.
       const targetRef = pushTargetRef(cloudSiteArg, instance);
 
+      // No target means THIS command provisions the site — which also decides
+      // whether the database rides along (see shouldPushDb) and whether the
+      // overwrite guards apply: there is no pre-existing cloud data to protect.
+      const isNewSite = !targetRef;
+      const includeDb = shouldPushDb(opts, isNewSite);
+
       // A dry run must be side-effect free. With no target at all (no arg, not a
       // cloned instance), a real push would *create* a site — which a dry run
       // must never do — so preview the local files that would be pushed (pure
@@ -257,11 +265,14 @@ export function registerLocalCommand(program: Command): void {
         const excludes = ['database', 'db.php', 'mu-plugins', '.git', 'node_modules', '.DS_Store', ...(opts.exclude ?? [])];
         const files = listLocalFiles(join(instance.path, 'wp-content'), excludes);
         if (isJsonMode()) {
-          console.log(JSON.stringify({ success: true, dry_run: true, would_create_site: localName, files }));
+          console.log(JSON.stringify({ success: true, dry_run: true, would_create_site: localName, would_push_db: includeDb, files }));
         } else {
           info(`(dry run) Would create cloud site "${localName}" and push ${chalk.dim(localWpContent)}`);
           for (const rel of files) console.log(`  ${chalk.dim('↑')} ${rel}`);
           info(`(dry run) ${files.length} file(s) would be pushed. No cloud site was created.`);
+          info(includeDb
+            ? '(dry run) The local database would be pushed to the new site and its URLs rewritten.'
+            : '(dry run) Files only (--no-db) — the new site would keep its empty WordPress database.');
         }
         return;
       }
@@ -369,11 +380,13 @@ export function registerLocalCommand(program: Command): void {
         process.exit(exitCode);
       }
 
-      // Optionally push the database too (OVERWRITES the cloud DB). Handles its
-      // own dry-run reporting and confirmation.
-      let dbStatus: 'done' | 'cancelled' | 'dry' | null = null;
-      if (opts.withDb) {
-        dbStatus = await pushDatabase(instance, site, conn, opts);
+      // Push the database too (OVERWRITES the cloud DB). Handles its own dry-run
+      // reporting and confirmation. `freshSite` tells it the DB it is about to
+      // replace is the untouched WordPress default this command just provisioned,
+      // so the overwrite prompt and the safety backup have nothing to protect.
+      let dbStatus: 'done' | 'cancelled' | 'dry' | 'skipped' | null = null;
+      if (includeDb) {
+        dbStatus = await pushDatabase(instance, site, conn, { ...opts, freshSite: isNewSite });
       }
 
       // Dry-run output was already emitted by the file sync (and pushDatabase);
@@ -390,7 +403,7 @@ export function registerLocalCommand(program: Command): void {
       if (site.url) {
         console.log(`\n  ${chalk.dim('Cloud site:')} ${chalk.cyan.underline(site.url)}`);
       }
-      if (!opts.withDb) {
+      if (!includeDb || dbStatus === 'skipped') {
         info('Files only. Database/content changes (pages, posts, settings) were NOT pushed — add --with-db to overwrite the cloud database.');
       }
     });
@@ -778,11 +791,20 @@ function isShellSafeUrl(u: string): boolean {
  * both), back up the cloud DB, upload + import, then `wp search-replace` the URL
  * (serialization-safe). Honors --dry-run / --no-backup / --force.
  */
-async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnection, opts: any): Promise<'done' | 'cancelled' | 'dry'> {
+async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnection, opts: any): Promise<'done' | 'cancelled' | 'dry' | 'skipped'> {
   const sqlitePath = join(instance.path, 'wp-content', 'database', '.ht.sqlite');
   if (!existsSync(sqlitePath)) {
-    error('No local database found (expected wp-content/database/.ht.sqlite). Skipping DB push.');
-    process.exit(1);
+    // An explicit --with-db must fail loud — the user asked for the DB and didn't
+    // get it. But when the DB was included automatically (a site-creating deploy),
+    // the site is already provisioned and the files are already up: exiting here
+    // would abandon a half-finished deploy over a database that isn't there.
+    // Degrade to files-only and say so.
+    if (opts.withDb) {
+      error('No local database found (expected wp-content/database/.ht.sqlite). Skipping DB push.');
+      process.exit(1);
+    }
+    error('No local database found (expected wp-content/database/.ht.sqlite) — deployed the files only.');
+    return 'skipped';
   }
 
   const wpPath = `/home/${conn.username}/web/${conn.domain}/public_html`;
@@ -799,7 +821,10 @@ async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnect
   const toUrl = String(site.url || `https://${conn.domain}`).replace(/\/+$/, '');
 
   // Destructive confirmation (skipped on --force; --json requires --force).
-  if (!opts.force && !opts.dryRun) {
+  // A freshly-provisioned site has no user data to lose — its DB is the default
+  // WordPress install this command created seconds ago — so don't make the user
+  // confirm an "overwrite" of nothing.
+  if (!opts.force && !opts.dryRun && !opts.freshSite) {
     if (isJsonMode()) {
       error('--force is required with --with-db in --json mode (cannot prompt before overwriting the cloud DB).');
       process.exit(1);
@@ -885,9 +910,10 @@ async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnect
     info(`${untouched.length} cloud table(s) have no local counterpart and will KEEP their existing data: ${untouched.slice(0, 8).join(', ')}${untouched.length > 8 ? ', …' : ''}`);
   }
 
-  // Back up the cloud DB first (unless --no-backup). Random suffix so same-second
-  // reruns never clobber a prior backup.
-  const takeBackup = opts.backup !== false;
+  // Back up the cloud DB first (unless --no-backup, or the site is one we just
+  // created — backing up an empty default install is pure cost). Random suffix so
+  // same-second reruns never clobber a prior backup.
+  const takeBackup = opts.backup !== false && !opts.freshSite;
   const ts = new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, '');
   const backupFilename = `db-backup-${ts}-${randomBytes(3).toString('hex')}.sql.gz`;
   const backupRemotePath = `/home/${conn.username}/${backupFilename}`;
@@ -902,6 +928,8 @@ async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnect
       process.exit(1);
     }
     bSpin.succeed(`Cloud DB backed up: ~/${backupFilename}`);
+  } else if (opts.freshSite) {
+    info('New site — no existing content to back up.');
   } else {
     info('Skipping cloud DB backup (--no-backup).');
   }

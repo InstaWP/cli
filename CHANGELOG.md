@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.0.1-beta.33 (2026-07-14)
+
+### Added — `instawp local deploy`: a local site goes live in one command
+
+`local push` could already provision a cloud site when given no target, but it pushed **files only** — so the one-shot deploy landed you on a live site with none of your pages, posts or settings, and the fix (`--with-db`) was only discoverable from a hint printed after the fact. Meanwhile the command that *sounds* like the deploy path, `migrate push`, cannot read a Playground instance at all (it needs `wp-config.php` MySQL credentials; a `local create` site is SQLite).
+
+- **`local deploy`** is now an alias of `local push` — the discoverable verb for "make my local site live".
+- A push that **creates** the cloud site now pushes the **database as well as the files** by default. Pushing into an **existing** site is unchanged: the DB stays opt-in behind `--with-db`, because it overwrites live data. New **`--no-db`** keeps any push files-only.
+- A site-creating push no longer prompts to confirm an "overwrite" of, nor takes a safety backup of, the empty WordPress database it provisioned seconds earlier. Both guards remain fully in force for an existing site.
+- Help text now says `local push` creates the cloud site when no target is given, and points `local create` users at `local deploy` rather than `migrate push`.
+
 ## 0.0.1-beta.32 (2026-07-10)
 
 ### Fixed — `local create` no longer false-fails the network check on valid connections

@@ -65,3 +65,20 @@ export function pushTargetRef(
   if (instance.cloudSiteId) return String(instance.cloudSiteId);
   return undefined;
 }
+
+/**
+ * Does this push carry the database as well as the files?
+ *
+ * Pushing into an EXISTING site stays opt-in (`--with-db`) — it overwrites live
+ * data. But when the push is what CREATES the site, the database is the whole
+ * point: files-only would leave the user on a brand-new site with none of their
+ * pages, posts or settings. So a site-creating push takes the DB by default.
+ * `--no-db` always wins, so the files-only behaviour stays reachable.
+ */
+export function shouldPushDb(
+  opts: { withDb?: boolean; db?: boolean },
+  isNewSite: boolean,
+): boolean {
+  if (opts.db === false) return false;
+  return !!opts.withDb || isNewSite;
+}
