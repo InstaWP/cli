@@ -12,6 +12,7 @@ import { registerSyncCommand } from './commands/sync.js';
 import { registerSshCommand } from './commands/ssh.js';
 import { registerExecCommand, registerWpCommand, registerSqlCommand } from './commands/exec.js';
 import { registerPluginCommand } from './commands/plugin.js';
+import { registerMcpCommand } from './commands/mcp.js';
 import { registerTeamsCommand } from './commands/teams.js';
 import { registerLocalCommand } from './commands/local.js';
 import { registerMigrateCommand } from './commands/migrate.js';
@@ -59,6 +60,7 @@ registerSyncCommand(program);
 registerDbCommand(program);
 registerCacheCommand(program);
 registerPluginCommand(program);
+registerMcpCommand(program);
 registerLogsCommand(program);
 registerOpenCommand(program);
 

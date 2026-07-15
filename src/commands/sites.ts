@@ -5,6 +5,7 @@ import { getApiUrl } from '../lib/config.js';
 import { resolveSite } from '../lib/site-resolver.js';
 import { waitForHttp } from '../lib/http-ready.js';
 import { success, error, table, spinner, info, isJsonMode } from '../lib/output.js';
+import { enableMcp, printMcpConnection, isValidPluginSlug, type McpConnection } from './mcp.js';
 
 export function registerSitesCommand(program: Command): void {
   const sites = program
@@ -94,6 +95,8 @@ export function registerSitesCommand(program: Command): void {
     .option('--php <version>', 'PHP version (e.g., 8.2)')
     .option('--config <id>', 'Configuration ID')
     .option('--temporary', 'Create as temporary site (default: permanent)')
+    .option('--mcp', 'Make the site MCP-ready (install + configure InstaMCP) after creation')
+    .option('--plugins <list>', 'Comma-separated wordpress.org plugin slugs to install (with --mcp)')
     .option('--no-wait', 'Do not wait for site to become active')
     .action(createSiteAction);
 
@@ -400,6 +403,24 @@ async function createSiteAction(opts: any): Promise<void> {
   const startTime = Date.now();
   const elapsed = () => ((Date.now() - startTime) / 1000).toFixed(1);
 
+  // --mcp needs the site provisioned + reachable over SSH, so it forces a wait.
+  const mcpPlugins: string[] = opts.plugins
+    ? String(opts.plugins).split(',').map((s: string) => s.trim()).filter(Boolean)
+    : [];
+  // Validate slugs up front so a typo fails before we spend time creating a site.
+  const badSlug = mcpPlugins.find((s) => !isValidPluginSlug(s));
+  if (badSlug) {
+    error(`Unsafe plugin slug "${badSlug}"`, 'Use lowercase letters, numbers, and hyphens only.');
+    process.exit(1);
+  }
+  if (opts.plugins && !opts.mcp && !json) {
+    info('--plugins has no effect without --mcp.');
+  }
+  if (opts.mcp && !opts.wait) {
+    if (!json) info('--mcp requires the site to be ready; ignoring --no-wait.');
+    opts.wait = true;
+  }
+
   // Step indicator helpers for human mode
   const step = (msg: string) => { if (!json) console.log(chalk.green('\u2713') + ' ' + msg); };
   const heading = (msg: string) => { if (!json) console.log('\n' + chalk.dim('#') + ' ' + msg); };
@@ -548,6 +569,20 @@ async function createSiteAction(opts: any): Promise<void> {
             else if (!json) info('Provisioned, but not answering over HTTP yet (DNS may still be propagating).');
           }
 
+          // Optionally make the site MCP-ready (install/configure InstaMCP).
+          let mcpConn: McpConnection | null = null;
+          if (opts.mcp) {
+            try {
+              mcpConn = await enableMcp(
+                { id: site.id, url: siteUrl, sub_domain: domain, name: opts.name },
+                { extraPlugins: mcpPlugins },
+              );
+            } catch (e: any) {
+              error('MCP enable failed', e?.message || String(e));
+              process.exit(1);
+            }
+          }
+
           if (json) {
             // If credentials not yet in details, try list endpoint
             let creds = meta;
@@ -573,6 +608,7 @@ async function createSiteAction(opts: any): Promise<void> {
                 status: 'Active',
                 http_ready: httpReady,
                 elapsed: elapsed() + 's',
+                ...(mcpConn ? { mcp: mcpConn } : {}),
               },
             }));
           } else {
@@ -601,6 +637,8 @@ async function createSiteAction(opts: any): Promise<void> {
             if (magicUrl) {
               console.log(`  ${chalk.dim('Magic Login:')} ${chalk.cyan.underline(magicUrl)}`);
             }
+
+            if (mcpConn) printMcpConnection(mcpConn);
           }
           return;
         }
@@ -630,6 +668,8 @@ export function registerCreateAlias(program: Command): void {
     .option('--php <version>', 'PHP version (e.g., 8.2)')
     .option('--config <id>', 'Configuration ID')
     .option('--temporary', 'Create as temporary site (default: permanent)')
+    .option('--mcp', 'Make the site MCP-ready (install + configure InstaMCP) after creation')
+    .option('--plugins <list>', 'Comma-separated wordpress.org plugin slugs to install (with --mcp)')
     .option('--no-wait', 'Do not wait for site to become active')
     .action(createSiteAction);
 }
