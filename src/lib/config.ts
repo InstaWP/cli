@@ -15,6 +15,7 @@ const config = new Conf({
     local_instances: { type: 'object', default: {} },
     team_id: { type: 'number', default: 0 },
     update_check: { type: 'object', default: {} },
+    mcp_tokens: { type: 'object', default: {} },
   },
 });
 
@@ -156,6 +157,21 @@ export function setSshCache(siteId: number, entry: SshConnectionCache): void {
   const cache = (config.get('ssh_cache') as Record<string, SshConnectionCache>) || {};
   cache[String(siteId)] = entry;
   config.set('ssh_cache', cache);
+}
+
+// InstaMCP connection tokens, keyed by site ID. Cached locally so re-running
+// `mcp enable` is a true no-op that re-prints the SAME token — the plugin only
+// stores the token's SHA256 hash, so the plaintext is recoverable only here.
+export function getMcpToken(siteId: number): string | null {
+  const cache = config.get('mcp_tokens') as Record<string, string>;
+  const token = cache?.[String(siteId)];
+  return token || null;
+}
+
+export function setMcpToken(siteId: number, token: string): void {
+  const cache = (config.get('mcp_tokens') as Record<string, string>) || {};
+  cache[String(siteId)] = token;
+  config.set('mcp_tokens', cache);
 }
 
 export function clearSshCache(siteId?: number): void {

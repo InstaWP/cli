@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.1-beta.33 (2026-07-15)
+
+### Added — `mcp enable` + `site create --mcp` (make a site MCP-ready in one command)
+
+Get InstaMCP installed, configured, and connectable on a site with no wp-admin clicks — so an agent can spin up a sandbox and immediately drive it over MCP.
+
+- **`instawp mcp enable <site>`** — installs + activates the InstaMCP plugin (if absent), enables **Execute PHP** (`insta_mcp_execute_php_enabled`) and **Site Files** read-write (`insta_mcp_site_files_mode=read_write`), mints a Bearer token tied to an administrator (which maps to the `mcp:admin` scope), and prints a machine-readable connection blob (`--json`) plus ready-to-paste `.mcp.json` and `claude mcp add` snippets. **Idempotent**: re-running re-prints the *same* token (cached locally, since the plugin stores only its hash) instead of minting a new one — pass `--rotate` to replace it.
+- **`instawp site create --mcp [--plugins elementor,bricks]`** — creates the site, waits for it to be ready, installs any `--plugins`, then runs the same enable path and emits the same blob.
+- Uses InstaMCP's supported **Bearer-token** transport (`/insta-mcp?t=<token>`). OAuth 2.1 client provisioning is intentionally not done — the plugin currently ships with `INSTA_MCP_OAUTH_FEATURE_ENABLED=false` (no OAuth tables/routes to mint a client against).
+
 ## 0.0.1-beta.32 (2026-07-10)
 
 ### Fixed — `local create` no longer false-fails the network check on valid connections
