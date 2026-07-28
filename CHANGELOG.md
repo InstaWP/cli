@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.1-beta.33 (2026-07-10)
+
+### Fixed — remote docroot resolved as a full path (chroot/jailed SSH nodes)
+
+On some newly-provisioned nodes the SSH account is confined to a **chroot** whose docroot is `/web/<site>/public_html` — the `/home/<user>` prefix the CLI string-built doesn't exist inside the jail. So `sync push` (rsync `mkdir … No such file or directory`), `wp`/`exec` (bad `cd`), plus `db`, `plugin`, `logs`, `local`, and `migrate` all failed on affected nodes. (Reported by InstaStudio dogfooding on `--temporary` sandboxes; extends the beta.31 cutover fix, which resolved only the web-dir *name* and still hardcoded the `/home/<user>` prefix.)
+
+- `ensureSshAccess` now resolves the **absolute docroot** from the server (`resolveRemoteDocRoot` — finds the `public_html` holding `wp-config.php`, checking both `~/web/*` and `/web/*`, with a bounded `find` fallback) and stores it in `conn.docRoot`. All remote path construction — `exec`/`wp` `cd`, `sync`'s `buildRemotePath`, `db` (incl. its backup home, derived via `remoteHomeDir`), `plugin`, `logs`, `local`, `migrate` — now uses `conn.docRoot` instead of `/home/<user>/web/<domain>/public_html`. Best-effort: falls back to the computed path if the server lookup fails.
+- Resolution self-heals stale caches (gated on `conn.docRoot`, so a cache from an older build re-resolves on upgrade — important as chroot rolls out to more nodes).
+- Verified end-to-end on a real chroot node: `wp option get siteurl` → `exit 0`, and `sync push` targets `/web/<site>/public_html/…`.
+
 ## 0.0.1-beta.32 (2026-07-10)
 
 ### Fixed — `local create` no longer false-fails the network check on valid connections

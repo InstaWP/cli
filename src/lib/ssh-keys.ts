@@ -6,7 +6,7 @@ import { getClient } from './api.js';
 import { getSshCache, setSshCache, clearSshCache, getSshHostOverride } from './config.js';
 import { error, info, spinner } from './output.js';
 import { probeTcp, printSshUnreachable, SshUnreachableError } from './ssh-preflight.js';
-import { resolveRemoteWebDir } from './ssh-connection.js';
+import { resolveRemoteDocRoot } from './ssh-connection.js';
 import type { SshConnection, SshKeyInfo } from '../types.js';
 
 const INSTAWP_DIR = path.join(homedir(), '.instawp');
@@ -153,13 +153,23 @@ export async function ensureSshAccess(siteId: number, opts: EnsureSshOptions = {
     process.exit(1);
   }
 
-  // Resolve the REAL web dir (docroot) from the server. The API "domain" can be a
-  // custom primary domain (post-cutover) while the HestiaCP web dir keeps the
-  // original sub_domain, so `~/web/<api-domain>/public_html` wouldn't exist. Do it
-  // once per connection (cached) — best-effort; keep the API domain if it fails.
-  if (!connection.webDirResolved) {
-    const webDir = resolveRemoteWebDir(connection);
-    connection = { ...connection, domain: webDir || connection.domain, webDirResolved: true };
+  // Resolve the REAL docroot (absolute `.../public_html`) from the server. String-built
+  // `/home/<user>/web/<api-domain>/public_html` breaks on (a) domain cutover — the web
+  // dir keeps the original sub_domain — and (b) chroot/jailed SSH — the real docroot is
+  // `/web/<site>/public_html` with no `/home/<user>` prefix. Resolve once (cached);
+  // fall back to the computed path only if the server lookup fails.
+  // Gate on docRoot (not webDirResolved) so a cache written by an older build — which
+  // has webDirResolved but no docRoot — self-heals on upgrade (important for chroot nodes).
+  if (!connection.docRoot) {
+    const docRoot = resolveRemoteDocRoot(connection)
+      || `/home/${connection.username}/web/${connection.domain}/public_html`;
+    connection = {
+      ...connection,
+      docRoot,
+      // Keep a display domain derived from the resolved docroot (the web-dir name).
+      domain: path.posix.basename(path.posix.dirname(docRoot)) || connection.domain,
+      webDirResolved: true,
+    };
     setSshCache(siteId, { connection, cachedAt: Date.now() });
   }
   return connection;

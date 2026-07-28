@@ -1,5 +1,27 @@
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, resolve, posix as posixPath } from 'node:path';
+
+interface RemoteConn { username: string; domain: string; docRoot?: string }
+
+/**
+ * The remote docroot (`.../public_html`). Prefers the server-resolved absolute path
+ * (`conn.docRoot`, which handles domain cutover AND chroot/jailed accounts), falling
+ * back to the legacy string-built `/home/<user>/web/<domain>/public_html` only if the
+ * server lookup was unavailable.
+ */
+export function remoteDocRoot(conn: RemoteConn): string {
+  return conn.docRoot || `/home/${conn.username}/web/${conn.domain}/public_html`;
+}
+
+/**
+ * The remote account home, derived from the docroot (three levels up):
+ * `/home/<user>` for a normal layout, `/` inside a chroot. Used for files the CLI
+ * drops in the home dir (e.g. db-push backups).
+ */
+export function remoteHomeDir(conn: RemoteConn): string {
+  const dr = remoteDocRoot(conn);
+  return posixPath.dirname(posixPath.dirname(posixPath.dirname(dr)));
+}
 
 /**
  * Convert a local filesystem path to a form rsync understands.
@@ -32,10 +54,10 @@ export function toRsyncPath(p: string): string {
  * returns a trailing slash so rsync/SFTP treat it as a directory.
  */
 export function buildRemotePath(
-  conn: { username: string; domain: string },
+  conn: RemoteConn,
   opts: { remotePath?: string; webroot?: boolean } = {},
 ): string {
-  const webrootBase = `/home/${conn.username}/web/${conn.domain}/public_html`;
+  const webrootBase = remoteDocRoot(conn);
   let p: string;
   if (opts.remotePath) {
     p = opts.remotePath.startsWith('/')

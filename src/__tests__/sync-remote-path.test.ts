@@ -1,5 +1,33 @@
 import { describe, it, expect } from 'vitest';
-import { buildRemotePath, buildSyncFilterArgs } from '../lib/paths.js';
+import { buildRemotePath, buildSyncFilterArgs, remoteDocRoot, remoteHomeDir } from '../lib/paths.js';
+
+describe('remoteDocRoot / remoteHomeDir (chroot-aware)', () => {
+  it('prefers the server-resolved docRoot over the computed path', () => {
+    const conn = { username: 'u', domain: 'foo.instawp.site', docRoot: '/web/foo.instawp.site/public_html' };
+    expect(remoteDocRoot(conn)).toBe('/web/foo.instawp.site/public_html'); // chroot: no /home/<user>
+  });
+
+  it('falls back to the /home/<user>/web/<domain>/public_html path when docRoot is absent', () => {
+    expect(remoteDocRoot({ username: 'u', domain: 'foo.instawp.site' }))
+      .toBe('/home/u/web/foo.instawp.site/public_html');
+  });
+
+  it('derives the home dir three levels up from the docroot', () => {
+    // normal layout → /home/<user>
+    expect(remoteHomeDir({ username: 'u', domain: 'foo', docRoot: '/home/u/web/foo/public_html' })).toBe('/home/u');
+    // chroot layout → the jail root
+    expect(remoteHomeDir({ username: 'u', domain: 'foo', docRoot: '/web/foo/public_html' })).toBe('/');
+    // fallback path → /home/<user>
+    expect(remoteHomeDir({ username: 'u', domain: 'foo' })).toBe('/home/u');
+  });
+
+  it('buildRemotePath uses the resolved docRoot as the webroot base', () => {
+    const chroot = { username: 'u', domain: 'foo', docRoot: '/web/foo/public_html' };
+    expect(buildRemotePath(chroot)).toBe('/web/foo/public_html/wp-content/');
+    expect(buildRemotePath(chroot, { webroot: true })).toBe('/web/foo/public_html/');
+    expect(buildRemotePath(chroot, { remotePath: 'wp-content/plugins/x' })).toBe('/web/foo/public_html/wp-content/plugins/x/');
+  });
+});
 
 const conn = { username: 'iwpuser', domain: 'my-site.instawp.site' };
 const base = '/home/iwpuser/web/my-site.instawp.site/public_html';

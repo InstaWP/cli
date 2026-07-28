@@ -7,6 +7,7 @@ import chalk from 'chalk';
 import { requireAuth, getClient } from '../lib/api.js';
 import { getApiUrl } from '../lib/config.js';
 import { ensureSshAccess } from '../lib/ssh-keys.js';
+import { remoteDocRoot } from '../lib/paths.js';
 import { scpUpload, execViaSsh } from '../lib/ssh-connection.js';
 import { waitForHttp } from '../lib/http-ready.js';
 import { success, error, info, spinner, isJsonMode } from '../lib/output.js';
@@ -175,8 +176,11 @@ async function migratePushAction(pathArg: string | undefined, opts: any): Promis
     // 7. SSH access + upload both archives into the new site's public_html — the
     //    exact location restore-raw reconstructs server-side.
     const conn = await ensureSshAccess(created.id);
-    const subDomain = created.subDomain || conn.domain;
-    const remoteDir = `/home/${conn.username}/web/${subDomain}/public_html`;
+    // Server-resolved docroot (handles chroot/cutover). The in-jail `/web/<site>/…`
+    // path and the out-of-jail `/home/<user>/web/<site>/…` the restore-raw endpoint
+    // reconstructs are the same physical dir, so the scp'd archives land where the
+    // server-side restore reads them.
+    const remoteDir = remoteDocRoot(conn);
     const zipBase = basename(zipPath);
     const sqlBase = basename(sqlPath);
 

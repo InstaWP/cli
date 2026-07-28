@@ -17,6 +17,7 @@ import { parseBackupList, selectBackupsToPrune, type RemoteBackup } from '../lib
 import { buildManifest, diffAgainstManifest, prefixFromTableNames, ExtendedInsertError, type Manifest } from '../lib/db-delta.js';
 import { loadBaseline, saveBaseline } from '../lib/db-baseline.js';
 import { runViaApi, chunkString } from '../lib/api-exec.js';
+import { remoteDocRoot, remoteHomeDir } from '../lib/paths.js';
 import { success, error, spinner, info, table, isJsonMode } from '../lib/output.js';
 import type { SshConnection } from '../types.js';
 
@@ -431,7 +432,7 @@ export function registerDbCommand(program: Command): void {
       }
 
       const conn = await ensureSshAccess(site.id, { sshHost: opts.sshHost, refresh: opts.refresh });
-      const wpPath = `/home/${conn.username}/web/${conn.domain}/public_html`;
+      const wpPath = remoteDocRoot(conn);
 
       const compress = opts.compress !== false;
       const siteLabel = sanitizeForFilename(site.name || site.sub_domain || `site-${site.id}`);
@@ -590,8 +591,8 @@ Examples:
       }
 
       const conn = await ensureSshAccess(site.id, { sshHost: opts.sshHost, refresh: opts.refresh });
-      const wpPath = `/home/${conn.username}/web/${conn.domain}/public_html`;
-      const remoteHome = `/home/${conn.username}`;
+      const wpPath = remoteDocRoot(conn);
+      const remoteHome = remoteHomeDir(conn);
 
       const timestamp = isoTimestamp();
       const backupFilename = `db-backup-${timestamp}.sql.gz`;

@@ -71,23 +71,35 @@ export function spawnInteractiveSsh(conn: SshConnection): number {
 }
 
 /**
- * Resolve the site's real web-dir NAME from the server. The platform API's
- * "domain" can be a custom PRIMARY domain (after a domain cutover) while the
- * HestiaCP web dir keeps the ORIGINAL sub_domain — so `~/web/<api-domain>/public_html`
- * points at a dir that doesn't exist (exec/wp `cd` fails, sync pushes to the wrong
- * path). Ask the server for the web dir whose public_html actually holds
- * wp-config.php. Returns the dir name (e.g. "abc.instawp.site"), or null on any
- * failure so the caller keeps the API domain.
+ * Resolve the site's real docroot — the absolute `.../public_html` path — from the
+ * server. String-building `/home/<user>/web/<domain>/public_html` is unreliable for
+ * two independent reasons:
+ *   1. **Domain cutover** — the API's domain becomes the new primary domain while the
+ *      HestiaCP web dir keeps the ORIGINAL sub_domain (`~/web/<orig>/public_html`).
+ *   2. **Chroot/jailed SSH** — on some nodes the SSH account is confined to a chroot
+ *      whose docroot is `/web/<site>/public_html`; the `/home/<user>` prefix is valid
+ *      out-of-jail but does NOT exist inside the session the CLI actually uses.
+ * So we ask the server for the `public_html` that actually holds wp-config.php,
+ * checking both `~/web/*` and `/web/*` (jail), with a bounded `find` fallback. Returns
+ * the absolute docroot (e.g. `/home/u/web/foo/public_html` or `/web/foo/public_html`),
+ * or null on failure so the caller keeps its computed path.
  */
-export function resolveRemoteWebDir(conn: SshConnection): string | null {
-  const marker = `__IWP_WEBDIR_${randomBytes(4).toString('hex')}__`;
-  // Marker-print then find the WP docroot; MOTD (if any) precedes the marker.
-  const cmd = `printf '%s\\n' '${marker}'; for d in "$HOME"/web/*/public_html; do if [ -f "$d/wp-config.php" ]; then basename "$(dirname "$d")"; break; fi; done`;
-  const res = execViaSsh(conn, cmd);
+export function resolveRemoteDocRoot(conn: SshConnection): string | null {
+  const marker = `__IWP_DOCROOT_${randomBytes(4).toString('hex')}__`;
+  // Marker-print (MOTD precedes it), then print the docroot. Check ~/web/* and /web/*
+  // (chroot), then fall back to a bounded find so odd layouts still resolve.
+  const script =
+    `printf '%s\\n' '${marker}'; ` +
+    'd=""; for c in "$HOME"/web/*/public_html /web/*/public_html; do ' +
+    '[ -f "$c/wp-config.php" ] && d="$c" && break; done; ' +
+    '[ -z "$d" ] && d="$(find "$HOME" /web -maxdepth 4 -name wp-config.php 2>/dev/null | head -n1 | xargs -r dirname)"; ' +
+    "printf '%s\\n' \"$d\"";
+  const res = execViaSsh(conn, script);
   if (res.exitCode !== 0) return null;
   const out = sliceAfterMarker(res.stdout, marker);
-  const name = out.split('\n').map((s) => s.trim()).filter(Boolean)[0];
-  return name || null;
+  // The docroot is the emitted line starting with `/` (ignore any stray shell noise).
+  const p = out.split('\n').map((s) => s.trim()).filter(Boolean).find((s) => s.startsWith('/'));
+  return p || null;
 }
 
 export function execViaSsh(conn: SshConnection, command: string): { stdout: string; stderr: string; exitCode: number } {

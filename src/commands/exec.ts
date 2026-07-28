@@ -6,6 +6,7 @@ import { ensureSshAccess } from '../lib/ssh-keys.js';
 import { execViaSsh, execViaSshStreamStdin } from '../lib/ssh-connection.js';
 import { SshUnreachableError } from '../lib/ssh-preflight.js';
 import { buildRemoteCommandString, sliceAfterMarker } from '../lib/remote-command.js';
+import { remoteDocRoot } from '../lib/paths.js';
 import { error, info, spinner, isJsonMode } from '../lib/output.js';
 
 interface ExecOpts {
@@ -130,10 +131,9 @@ async function execViaSshTransport(
     throw err;
   }
 
-  // Auto-cd into WordPress root so wp-cli and other tools work out of the box
-  const wpRoot = conn.domain
-    ? `/home/${conn.username}/web/${conn.domain}/public_html`
-    : '';
+  // Auto-cd into the WordPress docroot so wp-cli and other tools work out of the box.
+  // Uses the server-resolved docroot (handles cutover + chroot), not a string-built path.
+  const wpRoot = remoteDocRoot(conn);
   const base = wpRoot ? `cd ${wpRoot} && ${command}` : command;
 
   // --stdin: stream local stdin to the remote command (uploads, restore pipes,

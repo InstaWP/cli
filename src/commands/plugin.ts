@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { requireAuth } from '../lib/api.js';
 import { resolveSite } from '../lib/site-resolver.js';
 import { ensureSshAccess } from '../lib/ssh-keys.js';
+import { remoteDocRoot } from '../lib/paths.js';
 import { execViaSsh, scpUpload, syncFiles } from '../lib/ssh-connection.js';
 import { success, error, spinner, info, isJsonMode } from '../lib/output.js';
 
@@ -56,7 +57,7 @@ export function registerPluginCommand(program: Command): void {
       }
 
       const conn = await ensureSshAccess(site.id);
-      const wpPath = `/home/${conn.username}/web/${conn.domain}/public_html`;
+      const wpPath = remoteDocRoot(conn);
 
       if (isZip) {
         // Upload the zip and let WP-CLI install it (handles overwrite + activation).

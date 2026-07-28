@@ -81,10 +81,14 @@ export interface SshConnection {
   port: number;
   privateKeyPath: string;
   siteId: number;
-  /** The REAL web-dir name (`~/web/<domain>/public_html`). Post-cutover this is the
-   *  original sub_domain, NOT the API's primary domain — resolved from the server. */
+  /** The REAL web-dir name (for display/messages). Post-cutover this is the original
+   *  sub_domain, NOT the API's primary domain — derived from the resolved docroot. */
   domain: string;
-  /** True once the web dir has been resolved from the server (cached; resolve once). */
+  /** Absolute remote docroot (`.../public_html`), resolved from the server. Handles
+   *  domain cutover AND chroot/jailed SSH (`/web/<site>/public_html`, no `/home/<user>`).
+   *  All remote path construction uses this, not a string-built `/home/…` path. */
+  docRoot?: string;
+  /** True once the docroot has been resolved from the server (cached; resolve once). */
   webDirResolved?: boolean;
 }
 

@@ -30,6 +30,7 @@ import {
 import { requireAuth, getClient } from '../lib/api.js';
 import { resolveSite } from '../lib/site-resolver.js';
 import { ensureSshAccess } from '../lib/ssh-keys.js';
+import { remoteDocRoot } from '../lib/paths.js';
 import { syncFiles, execViaSsh, execViaSshToFile, scpUpload } from '../lib/ssh-connection.js';
 import { listLocalFiles } from '../lib/sftp-sync.js';
 import { sanitizeName, defaultInstanceName, pushTargetRef, parseTablePrefix, parseSqlTableNames } from '../lib/local-instance.js';
@@ -345,7 +346,7 @@ export function registerLocalCommand(program: Command): void {
 
       // Get SSH access
       const conn = await ensureSshAccess(site.id);
-      const remotePath = `/home/${conn.username}/web/${conn.domain}/public_html/wp-content/`;
+      const remotePath = `${remoteDocRoot(conn)}/wp-content/`;
 
       const extraArgs: string[] = [
         '--exclude=database', // Don't push SQLite database to cloud (cloud uses MySQL)
@@ -430,7 +431,7 @@ export function registerLocalCommand(program: Command): void {
       }
 
       const conn = await ensureSshAccess(site.id);
-      const remotePath = `/home/${conn.username}/web/${conn.domain}/public_html/wp-content/`;
+      const remotePath = `${remoteDocRoot(conn)}/wp-content/`;
 
       const extraArgs: string[] = [];
       if (opts.include) {
@@ -533,7 +534,7 @@ export function registerLocalCommand(program: Command): void {
       const dbSpin = spinner('Exporting database...');
       dbSpin.start();
       try {
-        const wpPath = `/home/${conn.username}/web/${conn.domain}/public_html`;
+        const wpPath = remoteDocRoot(conn);
         const { exitCode, stderr } = execViaSshToFile(
           conn,
           `cd ${wpPath} && wp db export --single-transaction -`,
@@ -552,7 +553,7 @@ export function registerLocalCommand(program: Command): void {
 
       // 5. Pull wp-content via rsync
       const localWpContent = join(dir, 'wp-content') + '/';
-      const remotePath = `/home/${conn.username}/web/${conn.domain}/public_html/wp-content/`;
+      const remotePath = `${remoteDocRoot(conn)}/wp-content/`;
       const remoteSource = `${conn.username}@${conn.host}:${remotePath}`;
 
       info(`Pulling wp-content from ${chalk.dim(conn.domain)}...`);
@@ -575,7 +576,7 @@ export function registerLocalCommand(program: Command): void {
       }
 
       // 5b. Pull non-core root files (CLAUDE.md, .htaccess, wp-cli.yml, etc.)
-      const remoteRoot = `/home/${conn.username}/web/${conn.domain}/public_html/`;
+      const remoteRoot = `${remoteDocRoot(conn)}/`;
       const rootRemote = `${conn.username}@${conn.host}:${remoteRoot}`;
       await syncFiles(conn, rootRemote, dir + '/', [
         '--exclude=wp-admin/',
@@ -785,7 +786,7 @@ async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnect
     process.exit(1);
   }
 
-  const wpPath = `/home/${conn.username}/web/${conn.domain}/public_html`;
+  const wpPath = remoteDocRoot(conn);
 
   // Authoritative local URL from the DB (handles port drift); cloud URL from the site.
   let fromUrl = `http://127.0.0.1:${instance.port}`;

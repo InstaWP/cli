@@ -7,7 +7,7 @@ let mockFiles: Record<string, string> = {};
 let mockSshCache: Record<string, any> = {};
 let mockUnreachableHosts: string[] = []; // hosts the mocked TCP preflight treats as down
 let mockSshOverride: string | null = null; // controls getSshHostOverride
-let mockWebDir: string | null = null;    // controls resolveRemoteWebDir
+let mockDocRoot: string | null = null;   // controls resolveRemoteDocRoot
 const mockPrintUnreachable = vi.fn();
 const mockGet = vi.fn();
 const mockPost = vi.fn();
@@ -44,7 +44,7 @@ vi.mock('../lib/config.js', () => ({
 }));
 
 vi.mock('../lib/ssh-connection.js', () => ({
-  resolveRemoteWebDir: () => mockWebDir,
+  resolveRemoteDocRoot: () => mockDocRoot,
 }));
 
 vi.mock('../lib/ssh-preflight.js', () => ({
@@ -84,7 +84,7 @@ beforeEach(() => {
   mockSshCache = {};
   mockUnreachableHosts = [];
   mockSshOverride = null;
-  mockWebDir = null;
+  mockDocRoot = null;
   mockPrintUnreachable.mockClear();
   mockGet.mockReset();
   mockPost.mockReset();
@@ -101,7 +101,8 @@ describe('ssh-keys', () => {
         privateKeyPath: '/tmp/test_key',
         siteId: 100,
         domain: 'test.com',
-        webDirResolved: true, // already resolved → returned as-is, no SSH web-dir lookup
+        docRoot: '/home/user1/web/test.com/public_html',
+        webDirResolved: true, // already resolved → returned as-is, no SSH lookup
       };
       mockSshCache[100] = { connection: conn, cachedAt: Date.now() };
       mockFiles['/tmp/test_key'] = 'private key';
@@ -255,23 +256,49 @@ describe('ssh-keys', () => {
       expect(result.host).toBe('ok.com');
     });
 
-    it('resolves the real web dir from the server, overriding the API domain (post-cutover)', async () => {
-      mockWebDir = 'instawp-marketing.instawp.site'; // the server's actual web dir
+    // Full-resolve mocks that land on a given docroot (the server-resolved path).
+    const mockResolveTo = (docRoot: string) => {
+      mockDocRoot = docRoot;
       mockFiles[CLI_KEY_PUB] = 'ssh-rsa AAAA== instawp-cli';
       mockFiles[CLI_KEY_PATH] = 'private key';
-
       mockGet.mockResolvedValueOnce({ data: { data: [] } }); // ssh-keys
       mockPost.mockResolvedValueOnce({ data: { data: { id: 5 } } }); // upload
       mockPost.mockResolvedValueOnce({ data: { host: '10.0.0.5', username: 'u', port: 22, data: [] } }); // enable ssh
       mockPost.mockResolvedValueOnce({ data: {} }); // sftp
       mockPost.mockResolvedValueOnce({ data: {} }); // attach
-      // API reports the cutover primary domain — must NOT be used for the web dir.
       mockGet.mockResolvedValueOnce({ data: { data: { site: { main_domain: 'instawp.com', sub_domain: 'instawp.com' } } } });
       mockGet.mockResolvedValueOnce({ data: { data: { ip_addr: '10.0.0.5' } } }); // credentials
+    };
 
+    it('resolves the real docroot from the server, overriding the API domain (post-cutover)', async () => {
+      mockResolveTo('/home/u/web/instawp-marketing.instawp.site/public_html');
       const result = await ensureSshAccess(950);
-      expect(result.domain).toBe('instawp-marketing.instawp.site'); // real docroot, not instawp.com
-      expect(result.webDirResolved).toBe(true);
+      expect(result.docRoot).toBe('/home/u/web/instawp-marketing.instawp.site/public_html');
+      // display domain is derived from the docroot, NOT the API's cutover domain
+      expect(result.domain).toBe('instawp-marketing.instawp.site');
+    });
+
+    it('resolves a CHROOT docroot (/web/<site>/public_html, no /home/<user> prefix)', async () => {
+      mockResolveTo('/web/foo.instawp.site/public_html');
+      const result = await ensureSshAccess(951);
+      expect(result.docRoot).toBe('/web/foo.instawp.site/public_html'); // jail path, not /home/...
+      expect(result.domain).toBe('foo.instawp.site');
+    });
+
+    it('falls back to the computed /home path when the server lookup fails', async () => {
+      mockDocRoot = null; // resolver returns nothing
+      mockFiles[CLI_KEY_PUB] = 'ssh-rsa AAAA== instawp-cli';
+      mockFiles[CLI_KEY_PATH] = 'private key';
+      mockGet.mockResolvedValueOnce({ data: { data: [] } });
+      mockPost.mockResolvedValueOnce({ data: { data: { id: 5 } } });
+      mockPost.mockResolvedValueOnce({ data: { host: '10.0.0.5', username: 'siteuser', port: 22, data: [] } });
+      mockPost.mockResolvedValueOnce({ data: {} });
+      mockPost.mockResolvedValueOnce({ data: {} });
+      mockGet.mockResolvedValueOnce({ data: { data: { site: { main_domain: 'site.com' } } } });
+      mockGet.mockResolvedValueOnce({ data: { data: { ip_addr: '10.0.0.5' } } });
+
+      const result = await ensureSshAccess(952);
+      expect(result.docRoot).toBe('/home/siteuser/web/site.com/public_html');
     });
 
     it('applies the SSH host override over the API host (CDN-fronted site)', async () => {

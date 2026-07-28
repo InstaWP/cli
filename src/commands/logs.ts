@@ -6,6 +6,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { requireAuth } from '../lib/api.js';
 import { resolveSite } from '../lib/site-resolver.js';
 import { ensureSshAccess } from '../lib/ssh-keys.js';
+import { remoteDocRoot } from '../lib/paths.js';
 import { execViaSsh } from '../lib/ssh-connection.js';
 import { error, spinner, isJsonMode } from '../lib/output.js';
 import type { SshConnection } from '../types.js';
@@ -60,22 +61,25 @@ function shellQuote(s: string): string {
 }
 
 function buildLogSpecs(conn: SshConnection, kinds: Array<LogSpec['kind']>): LogSpec[] {
-  const user = conn.username;
   const domain = conn.domain;
+  // Derive the per-domain paths from the server-resolved docroot so they're correct
+  // under a chroot too (`/web/<domain>/…`, not `/home/<user>/web/<domain>/…`).
+  const docRoot = remoteDocRoot(conn);                  // .../web/<domain>/public_html
+  const webBase = docRoot.replace(/\/public_html\/?$/, ''); // .../web/<domain>
   const specs: LogSpec[] = [];
 
   for (const kind of kinds) {
     if (kind === 'wp') {
       specs.push({
         kind: 'wp',
-        candidates: [`/home/${user}/web/${domain}/public_html/wp-content/debug.log`],
+        candidates: [`${docRoot}/wp-content/debug.log`],
       });
     } else if (kind === 'nginx') {
       specs.push({
         kind: 'nginx',
         candidates: [
+          `${webBase}/logs/${domain}.error.log`,
           `/var/log/nginx/domains/${domain}.error.log`,
-          `/home/${user}/web/${domain}/logs/${domain}.error.log`,
         ],
       });
     } else if (kind === 'php') {
@@ -84,7 +88,7 @@ function buildLogSpecs(conn: SshConnection, kinds: Array<LogSpec['kind']>): LogS
       specs.push({
         kind: 'php',
         candidates: [
-          `/home/${user}/web/${domain}/logs/${domain}.error.log`,
+          `${webBase}/logs/${domain}.error.log`,
           '/var/log/php8.3-fpm.log',
           '/var/log/php8.2-fpm.log',
           '/var/log/php8.1-fpm.log',
