@@ -7,7 +7,6 @@ import path from 'node:path';
 // the user's config dir at import time. Stub them; only the pure helpers are
 // under test here.
 vi.mock('../lib/api.js', () => ({ requireAuth: vi.fn(), getClient: vi.fn() }));
-vi.mock('../lib/config.js', () => ({}));
 vi.mock('../lib/site-resolver.js', () => ({ resolveSite: vi.fn() }));
 vi.mock('../lib/ssh-keys.js', () => ({ ensureSshAccess: vi.fn() }));
 vi.mock('../lib/ssh-connection.js', () => ({ execViaSsh: vi.fn() }));
@@ -59,8 +58,9 @@ describe('logs probe script', () => {
   });
 
   for (const shell of ['bash', 'sh', 'dash']) {
-    it(`resolves the first readable candidate per kind under ${shell}`, () => {
-      if (!hasShell(shell)) return; // not every CI image ships dash
+    // skipIf, not a silent return: a CI image without dash must REPORT the
+    // lost coverage rather than pass vacuously.
+    it.skipIf(!hasShell(shell))(`resolves the first readable candidate per kind under ${shell}`, () => {
       const out = runUnder(shell, buildProbeScript(specs));
       expect(parseProbeOutput(out)).toEqual([
         { kind: 'wp', path: wpLog },
