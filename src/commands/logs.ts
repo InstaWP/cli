@@ -11,14 +11,14 @@ import { execViaSsh } from '../lib/ssh-connection.js';
 import { error, spinner, isJsonMode } from '../lib/output.js';
 import type { SshConnection } from '../types.js';
 
-interface LogSpec {
+export interface LogSpec {
   /** Short label (e.g. 'wp', 'php', 'nginx') */
   kind: 'wp' | 'php' | 'nginx';
   /** Candidate paths to probe, in priority order */
   candidates: string[];
 }
 
-interface ResolvedLog {
+export interface ResolvedLog {
   kind: LogSpec['kind'];
   path: string;
 }
@@ -103,31 +103,29 @@ function buildLogSpecs(conn: SshConnection, kinds: Array<LogSpec['kind']>): LogS
 }
 
 /**
- * Probe candidate paths on the remote host and return the first one that
- * exists for each log spec. We send a single SSH command that prints a marker
- * line per kind so we don't need one round-trip per probe.
+ * Build the single remote script that probes every candidate path and prints
+ * one marker line per spec: "<kind>\t<first-readable-path>", or "<kind>\t" when
+ * none is readable. Uses `printf`, not `echo`: on a bash login shell with
+ * `xpg_echo` off (the default), `echo "wp\tPATH"` prints a literal backslash-t,
+ * so the tab the parser splits on never appears and no log is ever found.
+ * `printf '%s\t%s\n'` interprets the escape in POSIX sh, bash and dash alike.
+ * Exported for tests, which run the generated script under a real shell.
  */
-function probeLogPaths(conn: SshConnection, specs: LogSpec[]): ResolvedLog[] {
-  if (specs.length === 0) return [];
-
-  // Build a script that, for each spec, prints "<kind>\t<first-existing-path>"
-  // or "<kind>\t" if none exist.
+export function buildProbeScript(specs: LogSpec[]): string {
   const lines: string[] = [];
   for (const spec of specs) {
     const checks = spec.candidates
-      .map((p) => `if [ -r ${shellQuote(p)} ]; then echo "${spec.kind}\\t${p}"; found=1; break; fi`)
+      .map((p) => `if [ -r ${shellQuote(p)} ]; then printf '%s\\t%s\\n' ${spec.kind} ${shellQuote(p)}; found=1; break; fi`)
       .join('; ');
-    lines.push(`found=0; for _ in 1; do ${checks}; done; if [ "$found" != "1" ]; then echo "${spec.kind}\\t"; fi`);
+    lines.push(`found=0; for _ in 1; do ${checks}; done; if [ "$found" != "1" ]; then printf '%s\\t\\n' ${spec.kind}; fi`);
   }
-  const script = lines.join('\n');
+  return lines.join('\n');
+}
 
-  const result = execViaSsh(conn, script);
-  if (result.exitCode !== 0 && !result.stdout) {
-    return [];
-  }
-
+/** Parse the probe script's stdout back into resolved logs. Exported for tests. */
+export function parseProbeOutput(stdout: string): ResolvedLog[] {
   const resolved: ResolvedLog[] = [];
-  for (const line of result.stdout.split('\n')) {
+  for (const line of stdout.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     const [kind, ...rest] = trimmed.split('\t');
@@ -137,6 +135,22 @@ function probeLogPaths(conn: SshConnection, specs: LogSpec[]): ResolvedLog[] {
     }
   }
   return resolved;
+}
+
+/**
+ * Probe candidate paths on the remote host and return the first one that
+ * exists for each log spec. We send a single SSH command that prints a marker
+ * line per kind so we don't need one round-trip per probe.
+ */
+function probeLogPaths(conn: SshConnection, specs: LogSpec[]): ResolvedLog[] {
+  if (specs.length === 0) return [];
+
+  const result = execViaSsh(conn, buildProbeScript(specs));
+  if (result.exitCode !== 0 && !result.stdout) {
+    return [];
+  }
+
+  return parseProbeOutput(result.stdout);
 }
 
 interface LogsOptions {
