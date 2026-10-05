@@ -299,6 +299,29 @@ describe('ssh-keys', () => {
 
       const result = await ensureSshAccess(952);
       expect(result.docRoot).toBe('/home/siteuser/web/site.com/public_html');
+      // The unverified fallback is NOT cached, so the next call asks the server again.
+      expect(mockSshCache[952].connection.docRoot).toBeUndefined();
+    });
+
+    it('re-resolves on the next call after a failed lookup (mapped-domain site)', async () => {
+      // First call: lookup fails → fallback built from the mapped domain (wrong dir).
+      mockDocRoot = null;
+      mockFiles[CLI_KEY_PUB] = 'ssh-rsa AAAA== instawp-cli';
+      mockFiles[CLI_KEY_PATH] = 'private key';
+      mockGet.mockResolvedValueOnce({ data: { data: [] } });
+      mockPost.mockResolvedValueOnce({ data: { data: { id: 5 } } });
+      mockPost.mockResolvedValueOnce({ data: { host: '10.0.0.5', username: 'u', port: 22, data: [] } });
+      mockPost.mockResolvedValueOnce({ data: {} });
+      mockPost.mockResolvedValueOnce({ data: {} });
+      mockGet.mockResolvedValueOnce({ data: { data: { site: { main_domain: 'cli.example.com' } } } });
+      mockGet.mockResolvedValueOnce({ data: { data: { ip_addr: '10.0.0.5' } } });
+      expect((await ensureSshAccess(953)).docRoot).toBe('/home/u/web/cli.example.com/public_html');
+
+      // Second call (cached connection): lookup now works → the real web dir wins.
+      mockDocRoot = '/home/u/web/cli-site.instawp.dev/public_html';
+      const second = await ensureSshAccess(953);
+      expect(second.docRoot).toBe('/home/u/web/cli-site.instawp.dev/public_html');
+      expect(mockSshCache[953].connection.docRoot).toBe('/home/u/web/cli-site.instawp.dev/public_html');
     });
 
     it('applies the SSH host override over the API host (CDN-fronted site)', async () => {

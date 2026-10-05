@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { randomBytes } from 'node:crypto';
 import { requireAuth, getClient } from '../lib/api.js';
 import { resolveSite } from '../lib/site-resolver.js';
-import { ensureSshAccess } from '../lib/ssh-keys.js';
+import { ensureSshAccess, resolveDocRoot } from '../lib/ssh-keys.js';
 import { execViaSsh, execViaSshStreamStdin } from '../lib/ssh-connection.js';
 import { SshUnreachableError } from '../lib/ssh-preflight.js';
 import { buildRemoteCommandString, sliceAfterMarker } from '../lib/remote-command.js';
@@ -110,6 +110,11 @@ async function execViaApi(site: any, command: string, opts: { timeout?: string }
   }
 }
 
+/** True when stderr is the shell's `cd: <dir>: No such file or directory` for `dir`. */
+export function isMissingDirError(stderr: string, dir: string): boolean {
+  return stderr.includes(`cd: ${dir}: No such file or directory`);
+}
+
 async function execViaSshTransport(
   site: any,
   command: string,
@@ -158,7 +163,16 @@ async function execViaSshTransport(
   // slice stdout after it so only the command's own output is returned. Exit
   // code is unaffected (the marker printf is a separate statement before `base`).
   const marker = `__IWP_OUT_${randomBytes(6).toString('hex')}__`;
-  const result = execViaSsh(conn, `printf '%s\\n' '${marker}'; ${base}`);
+  let result = execViaSsh(conn, `printf '%s\\n' '${marker}'; ${base}`);
+
+  // A cached docroot that no longer exists fails the `cd`, and `&&` means the command
+  // never ran — so re-resolve the docroot from the server and retry once.
+  if (result.exitCode !== 0 && isMissingDirError(result.stderr, wpRoot)) {
+    const healed = resolveDocRoot(site.id, conn);
+    if (healed?.docRoot && healed.docRoot !== wpRoot) {
+      result = execViaSsh(healed, `printf '%s\\n' '${marker}'; cd ${healed.docRoot} && ${command}`);
+    }
+  }
   const stdout = sliceAfterMarker(result.stdout, marker);
 
   if (isJsonMode()) {
