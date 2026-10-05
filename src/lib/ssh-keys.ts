@@ -161,18 +161,33 @@ export async function ensureSshAccess(siteId: number, opts: EnsureSshOptions = {
   // Gate on docRoot (not webDirResolved) so a cache written by an older build — which
   // has webDirResolved but no docRoot — self-heals on upgrade (important for chroot nodes).
   if (!connection.docRoot) {
-    const docRoot = resolveRemoteDocRoot(connection)
-      || `/home/${connection.username}/web/${connection.domain}/public_html`;
-    connection = {
+    connection = resolveDocRoot(siteId, connection) || {
       ...connection,
-      docRoot,
-      // Keep a display domain derived from the resolved docroot (the web-dir name).
-      domain: path.posix.basename(path.posix.dirname(docRoot)) || connection.domain,
-      webDirResolved: true,
+      docRoot: `/home/${connection.username}/web/${connection.domain}/public_html`,
     };
-    setSshCache(siteId, { connection, cachedAt: Date.now() });
   }
   return connection;
+}
+
+/**
+ * Ask the server for the real docroot and cache it. Returns null when the lookup fails.
+ * Only a server-verified docroot is ever cached: the string-built fallback uses the
+ * API domain, which on a mapped-domain site is the custom domain rather than the web
+ * dir's name, and caching it pinned a nonexistent path (`cd: …: No such file or
+ * directory`) until the cache expired.
+ */
+export function resolveDocRoot(siteId: number, connection: SshConnection): SshConnection | null {
+  const docRoot = resolveRemoteDocRoot(connection);
+  if (!docRoot) return null;
+  const resolved: SshConnection = {
+    ...connection,
+    docRoot,
+    // Keep a display domain derived from the resolved docroot (the web-dir name).
+    domain: path.posix.basename(path.posix.dirname(docRoot)) || connection.domain,
+    webDirResolved: true,
+  };
+  setSshCache(siteId, { connection: resolved, cachedAt: Date.now() });
+  return resolved;
 }
 
 async function resolveConnection(siteId: number, override: string | null): Promise<SshConnection> {
