@@ -48,9 +48,14 @@ export async function fetchLatestVersion(timeoutMs = 2500): Promise<string | nul
   }
 }
 
-/** Run `npm install -g @instawp/cli@<tag>` (inherits stdio). Returns npm's exit code. */
+/**
+ * Run `npm install -g @instawp/cli@<tag>` (inherits stdio). Returns npm's exit code.
+ * `--allow-scripts=better-sqlite3`: npm 12 blocks install scripts by default, which
+ * would leave the SQLite native binary undownloaded (local clone/push then fail).
+ * npm 10/11 accept it (some 11.x versions print an unknown-config warning).
+ */
 export function performUpgrade(versionTag = 'latest'): number {
-  const res = spawnSync('npm', ['install', '-g', `${PKG}@${versionTag}`], { stdio: 'inherit' });
+  const res = spawnSync('npm', ['install', '-g', `${PKG}@${versionTag}`, '--allow-scripts=better-sqlite3'], { stdio: 'inherit' });
   return res.status ?? 1;
 }
 

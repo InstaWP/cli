@@ -4,7 +4,7 @@
 
 TypeScript CLI for InstaWP. Lets users create/manage WordPress sites from the terminal.
 
-- **Stack**: TypeScript, ESM, Commander.js, Axios, Node 18+
+- **Stack**: TypeScript, ESM, Commander.js, Axios, Node 22+
 - **Package**: `@instawp/cli` on npm (scoped, public)
 - **Entry**: `src/index.ts` → compiled to `dist/index.js`
 - **Binary**: `instawp` (registered via `bin` in package.json)
@@ -209,7 +209,7 @@ The standalone-CLI replacement for the plugin's `wp instawp local push`. Mirrors
 
 Windows ships with `ssh`/`scp` but not `rsync`, `awk`, or `sqlite3`. The CLI works on Windows with zero extra installs via:
 
-- **`better-sqlite3`** (npm dep) — replaces the sqlite3 CLI. Native module, prebuilt binaries for win32-x64.
+- **`better-sqlite3`** (optional npm dep) — replaces the sqlite3 CLI. Native module with prebuilt binaries per Node ABI: a Node version with no prebuild falls back to node-gyp, which fails without Visual Studio Build Tools, so it is an `optionalDependency` and lazy-loaded via `loadSqlite()` (`src/lib/sqlite.ts`) — only `local clone`/`local push --with-db` need it. **Never import it statically** from anything `index.ts` loads, or a skipped install breaks every command. When bumping it, check the release's `node-v<ABI>-win32-x64` assets cover every Node line in `publish.yml`'s smoke matrix.
 - **`vendor/win32/busybox.exe`** — provides `awk` for the `mysql2sqlite` script (invoked as `busybox awk -f ...`). Statically linked, no DLLs. This is the **only** bundled binary.
 - **Pure-JS SFTP** (`ssh2-sftp-client`) for file transfers — see below.
 - **`cross-spawn`** for launching WordPress Playground (`local create/start/clone`). `npx`/`wp-playground-cli` are `.cmd` shims on Windows; Node won't spawn `.cmd` without `shell:true` (CVE-2024-27980), so `local-env.ts` uses `cross-spawn` (resolves the shim + quotes mount-path args safely). Never use bare `child_process.spawn` for npx/.cmd on Windows.
