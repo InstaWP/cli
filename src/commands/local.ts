@@ -504,6 +504,14 @@ export function registerLocalCommand(program: Command): void {
         process.exit(1);
       }
 
+      // The database import needs the native SQLite module. Check it now, before
+      // anything is downloaded, and warn instead of stopping: the files still clone.
+      try {
+        loadSqlite();
+      } catch (err: any) {
+        info(chalk.yellow("The site's files will be cloned, but its database can't be imported. ") + err.message);
+      }
+
       // 2. Create local instance
       const instances = getLocalInstances();
       const name = opts.name ? sanitizeName(opts.name) : defaultInstanceName(site);
@@ -607,6 +615,7 @@ export function registerLocalCommand(program: Command): void {
       // 7. Convert MySQL dump → SQLite, import directly, fix URLs and table prefix
       const hasDump = existsSync(dumpPath) && statSync(dumpPath).size > 0;
       let adminUsername = 'admin';
+      let dbImportError: string | null = null;
       if (hasDump) {
         const dbSpin2 = spinner('Importing database...');
         dbSpin2.start();
@@ -719,6 +728,7 @@ export function registerLocalCommand(program: Command): void {
             db.close();
           }
         } catch (err: any) {
+          dbImportError = err.message;
           dbSpin2.fail('Database import failed: ' + err.message);
         }
       }
@@ -749,8 +759,16 @@ export function registerLocalCommand(program: Command): void {
       writeFileSync(join(muDir, '0-suppress-errors.php'),
         "<?php\nerror_reporting(E_ERROR | E_PARSE);\n@ini_set('display_errors', '0');\n");
 
+      // Never report a plain success when the site came across without its content.
+      const header = dbImportError
+        ? `${chalk.bold.yellow('Clone complete — but the database was NOT imported.')}
+  ${chalk.yellow("The local site won't have the cloud site's posts, pages or settings.")}
+  ${chalk.dim('Reason:')} ${dbImportError}
+`
+        : chalk.bold.green('Clone complete!');
+
       console.log(`
-${chalk.bold.green('Clone complete!')}
+${header}
 
   ${chalk.dim('Name:')}        ${name}
   ${chalk.dim('PHP:')}         ${instance.php}
