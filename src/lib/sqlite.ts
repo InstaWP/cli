@@ -1,9 +1,9 @@
 import { createRequire } from 'node:module';
-import type BetterSqlite3 from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 
 const require = createRequire(import.meta.url);
 
-let cached: typeof BetterSqlite3 | undefined;
+let cached: typeof Database | undefined;
 
 /**
  * Load better-sqlite3 on first use instead of at startup.
@@ -14,10 +14,10 @@ let cached: typeof BetterSqlite3 | undefined;
  * `login` — because `index.ts` loads `local.ts` eagerly. Only the commands that
  * actually open a SQLite file (local clone/push) call this, so only they fail.
  */
-export function loadSqlite(): typeof BetterSqlite3 {
+export function loadSqlite(): typeof Database {
   if (cached) return cached;
   try {
-    cached = require('better-sqlite3') as typeof BetterSqlite3;
+    cached = require('better-sqlite3') as typeof Database;
     return cached;
   } catch (err: any) {
     throw new Error(
