@@ -22,7 +22,7 @@ export function loadSqlite(): typeof BetterSqlite3 {
   } catch (err: any) {
     throw new Error(
       `Local-site features need the SQLite native module (better-sqlite3), which failed to load (${err?.code || err?.message}). ` +
-      'Reinstall the CLI on Node.js 22 or 24 LTS: npm install -g @instawp/cli',
+      'Reinstall the CLI on Node.js 22, 24 or 26: npm install -g @instawp/cli',
     );
   }
 }

@@ -241,6 +241,18 @@ export function registerLocalCommand(program: Command): void {
         process.exit(1);
       }
 
+      // --with-db needs the native SQLite module. Check it before anything is
+      // pushed, so a missing module can't fail halfway (files already synced,
+      // and an overwrite confirmation for a DB push that cannot happen).
+      if (opts.withDb) {
+        try {
+          loadSqlite();
+        } catch (err: any) {
+          error(err.message);
+          process.exit(1);
+        }
+      }
+
       const localWpContent = join(instance.path, 'wp-content') + '/';
 
       // Where does this push go? Explicit arg → the site this instance was

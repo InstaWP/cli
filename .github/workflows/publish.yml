@@ -54,7 +54,7 @@ jobs:
           & $busybox awk 'BEGIN { print "awk works" }'
           if ($LASTEXITCODE -ne 0) { throw "busybox awk failed (exit $LASTEXITCODE)" }
 
-      - name: Install globally + verify CLI loads (incl. SFTP + native deps)
+      - name: Install globally + verify CLI loads (incl. SFTP deps)
         shell: pwsh
         run: |
           npm i -g (Get-ChildItem -Filter "instawp-cli-*.tgz").FullName
@@ -77,6 +77,13 @@ jobs:
           $cli = Join-Path (npm root -g) "@instawp\cli"
           node -e "const D=require(require.resolve('better-sqlite3',{paths:[process.argv[1]]}));const db=new D(':memory:');console.log('better-sqlite3', db.prepare('select sqlite_version() v').get().v);db.close()" $cli
           if ($LASTEXITCODE -ne 0) { throw "better-sqlite3 is missing or failed to load on Node ${{ matrix.node }}" }
+          # The runner HAS Visual Studio, so a missing prebuild would be compiled
+          # silently and still load — while users without build tools fail. A
+          # prebuild ships only build\Release\better_sqlite3.node; node-gyp
+          # writes build\config.gypi. Its presence means no prebuild was found.
+          if (Test-Path (Join-Path $cli "node_modules\better-sqlite3\build\config.gypi")) {
+            throw "better-sqlite3 was compiled from source on Node ${{ matrix.node }} (no prebuilt binary) — users without VS Build Tools would fail to install"
+          }
 
       - name: Verify the CLI still starts without the native module
         shell: pwsh
