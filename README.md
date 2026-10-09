@@ -280,6 +280,7 @@ The CLI checks for a new version **once a day** and prints a one-line hint (to s
 ## Requirements
 
 - Node.js 22+
+- **npm 12:** npm blocks packages' install scripts unless you allow them, so the SQLite module used by `local clone` / `local push --with-db` is never downloaded. Everything else works; for those two commands, install with `npm install -g @instawp/cli --allow-scripts=better-sqlite3`. The CLI tells you this if it happens. (`instawp upgrade` passes the flag for you.)
 - `ssh` and `ssh-keygen` (for SSH / `exec` / `sync` / `db` over SSH)
 - `rsync` (for `sync` on macOS/Linux; Windows uses built-in SFTP)
 - Local development uses WordPress Playground (auto-fetched via `npx`) — no Docker required
