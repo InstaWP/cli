@@ -3,10 +3,8 @@
 Create and manage WordPress sites from the terminal.
 
 ```
-npm install -g @instawp/cli --allow-scripts=better-sqlite3
+npm install -g @instawp/cli
 ```
-
-Requires Node.js 22+. `--allow-scripts` lets npm 12+ fetch the prebuilt SQLite module used by `local clone`/`local push --with-db`; without it everything else still works. npm 10 and 11 accept the flag too.
 
 This installs the latest release. The CLI checks for updates once a day and `instawp upgrade` keeps you current (see [Updating](#updating)).
 

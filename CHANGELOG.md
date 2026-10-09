@@ -10,7 +10,7 @@ The install aborted on Windows for anyone on Node 24 LTS, 25 or 26 (`npm warn cl
 - Upgraded to `better-sqlite3` ^12.11.1 (prebuilt for Node 22, 24, 25 and 26 on Windows, macOS and Linux) and made it an **optional** dependency: if the native module still can't be installed, the CLI installs anyway.
 - The module is now loaded only by the commands that use it (`local clone` / `local push`). Before, `local.ts` imported it at startup, so a missing module broke every command, including `login`. If it's missing, those two commands now say how to fix it.
 - **Requires Node.js 22+** (was 18+). Node 18 and 20 are end-of-life.
-- **npm 12** blocks packages' install scripts unless allowed, so the SQLite binary is never downloaded. The CLI now detects that on first use (not just a missing package) and says to reinstall with `--allow-scripts=better-sqlite3`. `instawp upgrade` passes that flag, and the README install command includes it.
+- **npm 12** blocks packages' install scripts unless allowed, so the SQLite binary is never downloaded. The CLI now detects that on first use (not just a missing package) and says to reinstall with `--allow-scripts=better-sqlite3`. `instawp upgrade` passes that flag. The plain install command is unchanged.
 - CI: the Windows smoke test now runs on Node 22, 24 and 26 (it only ran on Node 20, which had a prebuilt binary, so it could never catch this), checks the native module installed and loads, and checks the CLI still starts without it.
 
 ## 0.0.1-beta.33 (2026-07-10)

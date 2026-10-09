@@ -57,8 +57,7 @@ jobs:
       - name: Install globally + verify CLI loads (incl. SFTP deps)
         shell: pwsh
         run: |
-          # Same flag the README tells users to pass (npm 12 blocks install scripts without it).
-          npm i -g (Get-ChildItem -Filter "instawp-cli-*.tgz").FullName --allow-scripts=better-sqlite3
+          npm i -g (Get-ChildItem -Filter "instawp-cli-*.tgz").FullName
           if ($LASTEXITCODE -ne 0) { throw "npm i -g failed" }
 
           # `instawp --version` eagerly loads the full command import graph:

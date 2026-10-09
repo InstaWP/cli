@@ -37,7 +37,7 @@ export function registerUpgradeCommand(program: Command): void {
       if (!json) info(`Updating ${current} → ${latest}…`);
       const code = performUpgrade();
       if (code !== 0) {
-        error('Upgrade failed. If this is a permissions error, try: sudo npm install -g @instawp/cli@latest --allow-scripts=better-sqlite3');
+        error('Upgrade failed. If this is a permissions error, try: sudo npm install -g @instawp/cli@latest');
         process.exit(code);
       }
       if (json) console.log(JSON.stringify({ success: true, data: { current, latest, upgraded: true } }));
