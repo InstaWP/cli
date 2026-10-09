@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.1-beta.34 (2026-10-09)
 
 ### Fixed — `npm install -g @instawp/cli` fails on Windows with Node 24+
 
