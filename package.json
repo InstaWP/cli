@@ -21,7 +21,7 @@
     "test:watch": "vitest"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "keywords": [
     "instawp",
@@ -44,7 +44,6 @@
   "dependencies": {
     "archiver": "^7.0.1",
     "axios": "^1.7.0",
-    "better-sqlite3": "^11.10.0",
     "chalk": "^5.3.0",
     "cli-table3": "^0.6.5",
     "commander": "^12.1.0",
@@ -63,5 +62,8 @@
     "@types/ssh2-sftp-client": "^9.0.6",
     "typescript": "^5.5.0",
     "vitest": "^4.0.18"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^12.11.1"
   }
 }

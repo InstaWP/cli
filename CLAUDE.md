@@ -4,7 +4,7 @@
 
 TypeScript CLI for InstaWP. Lets users create/manage WordPress sites from the terminal.
 
-- **Stack**: TypeScript, ESM, Commander.js, Axios, Node 18+
+- **Stack**: TypeScript, ESM, Commander.js, Axios, Node 22+
 - **Package**: `@instawp/cli` on npm (scoped, public)
 - **Entry**: `src/index.ts` → compiled to `dist/index.js`
 - **Binary**: `instawp` (registered via `bin` in package.json)

@@ -10,14 +10,22 @@ on:
 
 jobs:
   smoke-windows:
-    name: Windows smoke test
+    name: Windows smoke test (Node ${{ matrix.node }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Every Node line a user is likely to have. better-sqlite3 is native: a
+        # Node version with no prebuilt win32 binary falls back to node-gyp, which
+        # needs Visual Studio Build Tools — users don't have them. Node 20 alone
+        # (the old single entry) had a prebuild, so it could never catch that.
+        node: [22, 24, 26]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
 
       - run: npm ci
       - run: npm run build
@@ -54,11 +62,33 @@ jobs:
 
           # `instawp --version` eagerly loads the full command import graph:
           #   sync -> ssh-connection -> sftp-sync -> ssh2-sftp-client + ssh2
-          #   local -> better-sqlite3 (native)
-          # so a clean exit here proves all of those load on Windows.
-          Write-Host "--- instawp --version (exercises SFTP + native deps) ---"
+          # so a clean exit here proves those load on Windows. better-sqlite3 is
+          # NOT in that graph (lazy-loaded by src/lib/sqlite.ts) — checked below.
+          Write-Host "--- instawp --version (exercises SFTP deps) ---"
           instawp --version
           if ($LASTEXITCODE -ne 0) { throw "instawp --version failed (exit $LASTEXITCODE) — a dependency failed to load" }
+
+      - name: Verify the native SQLite module installed and loads
+        shell: pwsh
+        run: |
+          # better-sqlite3 is an optionalDependency, so npm SKIPS it silently when
+          # the native build fails. That must never happen on a supported Node
+          # version — load it from the global install and open a DB to prove it.
+          $cli = Join-Path (npm root -g) "@instawp\cli"
+          node -e "const D=require(require.resolve('better-sqlite3',{paths:[process.argv[1]]}));const db=new D(':memory:');console.log('better-sqlite3', db.prepare('select sqlite_version() v').get().v);db.close()" $cli
+          if ($LASTEXITCODE -ne 0) { throw "better-sqlite3 is missing or failed to load on Node ${{ matrix.node }}" }
+
+      - name: Verify the CLI still starts without the native module
+        shell: pwsh
+        run: |
+          # Simulates a machine where the optional native build was skipped: core
+          # commands must keep working; only local clone/push may fail.
+          $mod = Join-Path (npm root -g) "@instawp\cli\node_modules\better-sqlite3"
+          if (-not (Test-Path $mod)) { throw "expected $mod to exist" }
+          Rename-Item $mod "$mod.hidden"
+          instawp --version
+          if ($LASTEXITCODE -ne 0) { throw "instawp --version failed without better-sqlite3 (exit $LASTEXITCODE) — it is being loaded eagerly again" }
+          Rename-Item "$mod.hidden" $mod
 
   publish:
     name: Publish to npm
@@ -74,7 +104,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
 
       - run: npm ci

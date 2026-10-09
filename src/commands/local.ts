@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import chalk from 'chalk';
 import open from 'open';
-import Database from 'better-sqlite3';
 import { resolveFromModule } from '../lib/paths.js';
 import { bundledBusybox } from '../lib/windows-binaries.js';
 import {
@@ -35,6 +34,7 @@ import { syncFiles, execViaSsh, execViaSshToFile, scpUpload } from '../lib/ssh-c
 import { listLocalFiles } from '../lib/sftp-sync.js';
 import { sanitizeName, defaultInstanceName, pushTargetRef, parseTablePrefix, parseSqlTableNames } from '../lib/local-instance.js';
 import { generateMysqlDump } from '../lib/sqlite-to-mysql.js';
+import { loadSqlite } from '../lib/sqlite.js';
 import { success, error, table, spinner, info, isJsonMode } from '../lib/output.js';
 import type { LocalInstance, SshConnection } from '../types.js';
 
@@ -639,7 +639,7 @@ export function registerLocalCommand(program: Command): void {
           );
 
           // Import directly via better-sqlite3 (no external sqlite3 CLI needed)
-          const db = new Database(sqliteDbPath);
+          const db = new (loadSqlite())(sqliteDbPath);
           try {
             db.exec(sqliteSql);
 
@@ -791,7 +791,7 @@ async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnect
   // Authoritative local URL from the DB (handles port drift); cloud URL from the site.
   let fromUrl = `http://127.0.0.1:${instance.port}`;
   try {
-    const ldb = new Database(sqlitePath, { readonly: true });
+    const ldb = new (loadSqlite())(sqlitePath, { readonly: true });
     try {
       const row = ldb.prepare("SELECT option_value AS v FROM wp_options WHERE option_name='siteurl'").get() as { v?: string } | undefined;
       if (row?.v) fromUrl = String(row.v).replace(/\/+$/, '');

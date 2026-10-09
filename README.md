@@ -279,7 +279,7 @@ The CLI checks for a new version **once a day** and prints a one-line hint (to s
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 22+
 - `ssh` and `ssh-keygen` (for SSH / `exec` / `sync` / `db` over SSH)
 - `rsync` (for `sync` on macOS/Linux; Windows uses built-in SFTP)
 - Local development uses WordPress Playground (auto-fetched via `npx`) — no Docker required
