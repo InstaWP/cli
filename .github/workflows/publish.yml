@@ -118,20 +118,20 @@ jobs:
       - run: npm test
       - run: npm run build
 
-      - name: Publish to npm
-        run: npm publish --access public --tag beta
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Trusted publishing (OIDC): npm swaps this job's id-token for a short-lived
+      # publish credential, so there is no NPM_TOKEN to expire (the 90-day
+      # granular token silently expiring is what broke beta.34). Configured on
+      # npmjs.com → @instawp/cli → Settings → Trusted Publisher (InstaWP/cli,
+      # publish.yml). Needs npm >= 11.5.1; Node 22 bundles npm 10.
+      - run: npm install -g npm@^11.5.1
 
-      - name: Point `latest` at this release
-        # Pre-1.0 there's no separate stable channel, so `latest` — what a plain
-        # `npm i -g @instawp/cli` installs — must track the newest beta.
-        # Publishing with `--tag beta` does NOT move `latest`, which is how it
-        # got stranded on an ancient version. Keep them in sync until a stable
-        # 1.x exists (then publish stable to `latest` and drop this step).
-        run: npm dist-tag add "@instawp/cli@${GITHUB_REF_NAME#v}" latest
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish to npm
+        # Straight to `latest` — what `npm i -g @instawp/cli`, `instawp upgrade`
+        # and the update notifier read. Pre-1.0 there is no separate stable
+        # channel. OIDC covers `npm publish` only (not `npm dist-tag`), so we
+        # publish to the tag we want rather than moving it afterwards. npm 11
+        # refuses to publish a prerelease without an explicit --tag.
+        run: npm publish --access public --tag latest
 
       - name: Create GitHub Release from CHANGELOG
         env:

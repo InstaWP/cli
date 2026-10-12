@@ -307,7 +307,7 @@ instawp --help
 git tag -a v0.0.1-beta.2 -m "..." && git push origin v0.0.1-beta.2
 ```
 
-- Publishes with `--tag beta` (install via `npm i -g @instawp/cli@beta`). `latest` stays on an old stable; drop `--tag beta` for stable releases. Uses `NPM_TOKEN`.
+- Publishes to the `latest` dist-tag via **npm trusted publishing (OIDC)** — no `NPM_TOKEN`. The trusted publisher is configured on npmjs.com (`@instawp/cli` → Settings → Trusted Publisher: GitHub Actions, `InstaWP/cli`, `publish.yml`); renaming the workflow file breaks publishing until that is updated. OIDC cannot run `npm dist-tag`, so the `beta` dist-tag is frozen at 0.0.1-beta.33 (nothing reads it). A publish `E404 PUT` means npm rejected the credential, not a missing package.
 - **`publish.yml`** (tag-triggered): Windows smoke test → build → test → npm publish → GitHub Release. **`release-notify.yml`** (also tag-triggered, unlike siblings which fire on PR-merge) → Claude summary to Slack. Both extract the CHANGELOG section by **exact** `## <version> ` header match, so the version in `package.json`, the tag, and the CHANGELOG header must all agree.
 - Pushing the tag is the release trigger; pushing `main` alone publishes nothing. Tag dispatch / secret listing needs repo admin (a normal token gets 403).
 
