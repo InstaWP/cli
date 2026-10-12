@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.0.1-beta.35 (2026-10-12)
+
+**First npm release since 0.0.1-beta.33.** The 0.0.1-beta.34 tag exists on GitHub but never reached npm (its publish was rejected — see below), so this release also ships everything listed under 0.0.1-beta.34: the Windows / Node 24+ install fix.
+
+### Changed — releases publish via npm trusted publishing
+
+- The release workflow now authenticates to npm with GitHub's OIDC identity instead of a stored `NPM_TOKEN`. That token had silently expired, which is why 0.0.1-beta.34 failed to publish with `E404`. Nothing to expire now; published versions also carry npm provenance.
+- Releases go straight to the `latest` dist-tag (what `npm i -g @instawp/cli` and `instawp upgrade` install). The `beta` dist-tag is no longer updated and stays at 0.0.1-beta.33.
 
 ### Fixed — `local stop` left the server running when Playground ran via npx
 
