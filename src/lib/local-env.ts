@@ -398,7 +398,10 @@ function signalServerTree(pid: number, signal: NodeJS.Signals | 0): boolean {
  */
 function groupIsOurServer(pid: number, port: number): boolean {
   if (process.platform === 'win32') return true;
-  const ps = spawnSync('ps', ['-eo', 'pgid=,args='], { encoding: 'utf-8' });
+  // -ww: ps truncates args to the terminal width (~80 cols on macOS whenever it is
+  // not on a tty, on Linux when COLUMNS is set), which would cut off --port= and
+  // make a live server look like someone else's.
+  const ps = spawnSync('ps', ['-wweo', 'pgid=,args='], { encoding: 'utf-8', maxBuffer: 64 << 20 });
   if (ps.status !== 0 || typeof ps.stdout !== 'string') return true;
   const marker = `--port=${port}`;
   return ps.stdout.split('\n').some((line) => {

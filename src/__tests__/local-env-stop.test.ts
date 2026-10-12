@@ -16,7 +16,8 @@ const childCode = process.argv[3] === 'ignore-term'
   : "setInterval(() => {}, 1000)";
 // Both carry the instance's --port=, like the npx wrapper and Playground do
 // ('--' so node does not parse it as its own option).
-const child = spawn(process.execPath, ['-e', childCode, '--', process.argv[2]], { stdio: 'ignore' });
+// A long token before --port=, like Playground's real argv (install paths, flags).
+const child = spawn(process.execPath, ['-e', childCode, '--', 'x'.repeat(200), process.argv[2]], { stdio: 'ignore' });
 fs.writeFileSync(process.argv[1], String(child.pid));
 setInterval(() => {}, 1000);
 `;
@@ -91,6 +92,35 @@ describe.skipIf(process.platform === 'win32')('stopServer kills the whole server
     await launch('ignore-term');
     expect(stopServer(instance, 300)).toBe(true);
     expect(alive(childPid)).toBe(false);
+  });
+
+  it('still finds --port= when ps would truncate to the terminal width (COLUMNS set)', async () => {
+    await launch();
+    process.kill(wrapperPid, 'SIGKILL'); // only the long-argv child carries the marker now
+    await waitFor(() => !alive(wrapperPid));
+    const prev = process.env.COLUMNS;
+    process.env.COLUMNS = '40';
+    try {
+      expect(isServerRunning(instance)).toBe(true);
+      expect(stopServer(instance)).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.COLUMNS; else process.env.COLUMNS = prev;
+    }
+    expect(alive(childPid)).toBe(false);
+  });
+
+  it('a process in ANOTHER group carrying the same --port= does not make this pid ours', async () => {
+    await launch();
+    // Point the pid file at a group leader without the marker; the server with this port lives in another group.
+    const other = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    other.unref();
+    try {
+      writeFileSync(join(dir, 'server.pid'), String(other.pid));
+      expect(stopServer(instance)).toBe(false);
+      expect(alive(other.pid!)).toBe(true);
+    } finally {
+      process.kill(other.pid!, 'SIGKILL');
+    }
   });
 
   it('leaves a recycled pid alone: a group without this instance\'s --port= is not ours', async () => {
