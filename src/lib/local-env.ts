@@ -389,6 +389,24 @@ function signalServerTree(pid: number, signal: NodeJS.Signals | 0): boolean {
   }
 }
 
+/**
+ * True when the process group still contains OUR server: a process whose argv
+ * carries this instance's `--port=` (both the npx wrapper and Playground have it).
+ * The pid file outlives crashes and reboots, so after pid reuse it can name an
+ * unrelated group — an interactive shell leads one — which we must not SIGKILL.
+ * If `ps` itself is unavailable, trust the pid file (the pre-group behaviour).
+ */
+function groupIsOurServer(pid: number, port: number): boolean {
+  if (process.platform === 'win32') return true;
+  const ps = spawnSync('ps', ['-eo', 'pgid=,args='], { encoding: 'utf-8' });
+  if (ps.status !== 0 || typeof ps.stdout !== 'string') return true;
+  const marker = `--port=${port}`;
+  return ps.stdout.split('\n').some((line) => {
+    const m = line.match(/^\s*(\d+)\s+(.*)$/);
+    return m !== null && Number(m[1]) === pid && m[2].split(/\s+/).includes(marker);
+  });
+}
+
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -396,7 +414,7 @@ function sleepSync(ms: number): void {
 export function stopServer(instance: LocalInstance, graceMs = 5000): boolean {
   const pidFile = join(instance.path, 'server.pid');
   const pid = readServerPid(pidFile);
-  if (pid === null) {
+  if (pid === null || !groupIsOurServer(pid, instance.port)) {
     rmSync(pidFile, { force: true });
     return false;
   }
@@ -404,9 +422,15 @@ export function stopServer(instance: LocalInstance, graceMs = 5000): boolean {
   if (signalServerTree(pid, 'SIGTERM')) {
     // Wait for the tree to exit so an immediate `local start` finds the port free;
     // escalate if Playground ignores SIGTERM.
-    const deadline = Date.now() + graceMs;
-    while (signalServerTree(pid, 0) && Date.now() < deadline) sleepSync(100);
-    if (signalServerTree(pid, 0)) signalServerTree(pid, 'SIGKILL');
+    const waitGone = (ms: number) => {
+      const deadline = Date.now() + ms;
+      while (signalServerTree(pid, 0) && Date.now() < deadline) sleepSync(100);
+    };
+    waitGone(graceMs);
+    if (signalServerTree(pid, 0)) {
+      signalServerTree(pid, 'SIGKILL');
+      waitGone(2000);
+    }
   }
   rmSync(pidFile, { force: true });
   return true;
@@ -417,7 +441,7 @@ export function isServerRunning(instance: LocalInstance): boolean {
   const pid = readServerPid(pidFile);
   // Group liveness: a server orphaned by its npx wrapper still counts as running,
   // so `local stop` can still reach it instead of the pid file being discarded.
-  if (pid !== null && signalServerTree(pid, 0)) return true;
+  if (pid !== null && signalServerTree(pid, 0) && groupIsOurServer(pid, instance.port)) return true;
   rmSync(pidFile, { force: true });
   return false;
 }

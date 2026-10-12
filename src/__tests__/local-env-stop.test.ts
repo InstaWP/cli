@@ -11,7 +11,12 @@ import type { LocalInstance } from '../types.js';
 const WRAPPER = `
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const child = spawn(process.execPath, ['-e', "setInterval(() => {}, 1000)"], { stdio: 'ignore' });
+const childCode = process.argv[3] === 'ignore-term'
+  ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"
+  : "setInterval(() => {}, 1000)";
+// Both carry the instance's --port=, like the npx wrapper and Playground do
+// ('--' so node does not parse it as its own option).
+const child = spawn(process.execPath, ['-e', childCode, '--', process.argv[2]], { stdio: 'ignore' });
 fs.writeFileSync(process.argv[1], String(child.pid));
 setInterval(() => {}, 1000);
 `;
@@ -23,7 +28,7 @@ setInterval(() => {}, 1000);
 const LAUNCHER = `
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
-const w = spawn(process.execPath, ['-e', ${JSON.stringify(WRAPPER)}, process.argv[1]], { detached: true, stdio: 'ignore' });
+const w = spawn(process.execPath, ['-e', ${JSON.stringify(WRAPPER)}, '--', ...process.argv.slice(1, 2), ...process.argv.slice(3)], { detached: true, stdio: 'ignore' });
 fs.writeFileSync(process.argv[2], String(w.pid));
 w.unref();
 `;
@@ -43,17 +48,18 @@ describe.skipIf(process.platform === 'win32')('stopServer kills the whole server
   let wrapperPid: number;
   let childPid: number;
 
-  beforeEach(async () => {
+  async function launch(mode = 'normal'): Promise<void> {
     dir = mkdtempSync(join(tmpdir(), 'iwp-stop-'));
-    instance = { name: 't', path: dir, port: 0 } as unknown as LocalInstance;
+    const port = 40000 + Math.floor(Math.random() * 20000);
+    instance = { name: 't', path: dir, port } as unknown as LocalInstance;
     const childPidFile = join(dir, 'child.pid');
     const pidFile = join(dir, 'server.pid');
-    await new Promise(r => spawn(process.execPath, ['-e', LAUNCHER, childPidFile, pidFile], { stdio: 'ignore' }).on('exit', r));
+    await new Promise(r => spawn(process.execPath, ['-e', LAUNCHER, '--', childPidFile, pidFile, `--port=${port}`, mode], { stdio: 'ignore' }).on('exit', r));
     wrapperPid = parseInt(readFileSync(pidFile, 'utf-8'), 10);
     await waitFor(() => existsSync(childPidFile) && readFileSync(childPidFile, 'utf-8').length > 0);
     childPid = parseInt(readFileSync(childPidFile, 'utf-8'), 10);
     expect(alive(childPid)).toBe(true);
-  });
+  }
 
   afterEach(() => {
     for (const p of [childPid, wrapperPid]) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } }
@@ -61,6 +67,7 @@ describe.skipIf(process.platform === 'win32')('stopServer kills the whole server
   });
 
   it('stops the wrapper AND its child, and removes the pid file', async () => {
+    await launch();
     const t0 = Date.now();
     expect(stopServer(instance)).toBe(true);
     // Synchronous: both are already gone when stopServer returns — the next
@@ -72,12 +79,29 @@ describe.skipIf(process.platform === 'win32')('stopServer kills the whole server
   });
 
   it('still reports running (and still stops) when only the orphaned child is left', async () => {
+    await launch();
     process.kill(wrapperPid, 'SIGKILL');
     await waitFor(() => !alive(wrapperPid));
     expect(isServerRunning(instance)).toBe(true);
     expect(stopServer(instance)).toBe(true);
     await waitFor(() => !alive(childPid));
     expect(alive(childPid)).toBe(false);
+  });
+  it('SIGKILLs a server that ignores SIGTERM once the grace period runs out', async () => {
+    await launch('ignore-term');
+    expect(stopServer(instance, 300)).toBe(true);
+    expect(alive(childPid)).toBe(false);
+  });
+
+  it('leaves a recycled pid alone: a group without this instance\'s --port= is not ours', async () => {
+    await launch();
+    instance = { ...instance, port: instance.port + 1 } as LocalInstance;
+    expect(isServerRunning(instance)).toBe(false);
+    writeFileSync(join(dir, 'server.pid'), String(wrapperPid));
+    expect(stopServer(instance)).toBe(false);
+    expect(alive(childPid)).toBe(true);
+    expect(alive(wrapperPid)).toBe(true);
+    expect(existsSync(join(dir, 'server.pid'))).toBe(false);
   });
 });
 

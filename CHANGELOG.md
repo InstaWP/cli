@@ -6,8 +6,9 @@
 
 Without a global `@wp-playground/cli`, `instawp local stop` printed "Stopped" but the site kept serving, and the next `local start` failed with `EADDRINUSE`.
 
-- The CLI recorded the pid of the `npx` wrapper and signalled only that; the Playground server is the wrapper's child and survived. `local stop` now stops the server's whole process group (Windows: `taskkill /T`), waits up to 5s for it to exit so the port is free when it returns, and force-kills it if it ignores SIGTERM.
-- `local list` reports a site whose wrapper died but whose server is still up as `running`, so `local stop` can still reach it (it used to show `stopped` and forget the pid).
+- The CLI recorded the pid of the `npx` wrapper and signalled only that; the Playground server is the wrapper's child and survived. `local stop` now stops the server's whole process group (Windows: `taskkill /T /F`) and waits for it to exit, so the port is free when it returns. On macOS/Linux it sends SIGTERM first and SIGKILL after 5s.
+- Before signalling, the CLI checks that the group still belongs to this site (a process carrying its `--port=`). A `server.pid` left behind by a crash or reboot can name a recycled pid, such as a terminal shell, and is now discarded instead of killed. macOS/Linux only.
+- On macOS/Linux, `local list` reports a site whose wrapper died but whose server is still up as `running`, so `local stop` can still reach it (it used to show `stopped` and forget the pid).
 - A corrupt `server.pid` (`0`, `1`, non-numeric) is now discarded. Before, a `0` made `local stop` signal the CLI's own process group.
 
 ## 0.0.1-beta.34 (2026-10-09)
