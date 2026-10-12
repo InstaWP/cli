@@ -1,5 +1,6 @@
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { openSync, writeSync, closeSync } from 'node:fs';
+import { loadSqlite } from './sqlite.js';
 
 /**
  * Generate a MySQL dump from a WordPress Playground SQLite database so a local
@@ -86,7 +87,7 @@ export function generateMysqlDump(params: DumpParams): DumpResult {
   const result: DumpResult = { tables: [], skipped: [], totalRows: 0 };
 
   try {
-    db = new Database(sqlitePath, { readonly: true });
+    db = new (loadSqlite())(sqlitePath, { readonly: true });
 
     writeSync(fd, '-- InstaWP CLI: local SQLite → MySQL data dump\n');
     // Pin a sane sql_mode so our backslash escaping is always honored (a server

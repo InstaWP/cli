@@ -6,7 +6,6 @@ import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import chalk from 'chalk';
 import open from 'open';
-import Database from 'better-sqlite3';
 import { resolveFromModule } from '../lib/paths.js';
 import { bundledBusybox } from '../lib/windows-binaries.js';
 import {
@@ -35,6 +34,7 @@ import { syncFiles, execViaSsh, execViaSshToFile, scpUpload } from '../lib/ssh-c
 import { listLocalFiles } from '../lib/sftp-sync.js';
 import { sanitizeName, defaultInstanceName, pushTargetRef, parseTablePrefix, parseSqlTableNames } from '../lib/local-instance.js';
 import { generateMysqlDump } from '../lib/sqlite-to-mysql.js';
+import { loadSqlite } from '../lib/sqlite.js';
 import { success, error, table, spinner, info, isJsonMode } from '../lib/output.js';
 import type { LocalInstance, SshConnection } from '../types.js';
 
@@ -239,6 +239,18 @@ export function registerLocalCommand(program: Command): void {
       if (!instance) {
         error(`Local instance "${localName}" not found.`);
         process.exit(1);
+      }
+
+      // --with-db needs the native SQLite module. Check it before anything is
+      // pushed, so a missing module can't fail halfway (files already synced,
+      // and an overwrite confirmation for a DB push that cannot happen).
+      if (opts.withDb) {
+        try {
+          loadSqlite();
+        } catch (err: any) {
+          error(err.message);
+          process.exit(1);
+        }
       }
 
       const localWpContent = join(instance.path, 'wp-content') + '/';
@@ -492,6 +504,14 @@ export function registerLocalCommand(program: Command): void {
         process.exit(1);
       }
 
+      // The database import needs the native SQLite module. Check it now, before
+      // anything is downloaded, and warn instead of stopping: the files still clone.
+      try {
+        loadSqlite();
+      } catch (err: any) {
+        info(chalk.yellow("The site's files will be cloned, but its database can't be imported. ") + err.message);
+      }
+
       // 2. Create local instance
       const instances = getLocalInstances();
       const name = opts.name ? sanitizeName(opts.name) : defaultInstanceName(site);
@@ -595,6 +615,7 @@ export function registerLocalCommand(program: Command): void {
       // 7. Convert MySQL dump → SQLite, import directly, fix URLs and table prefix
       const hasDump = existsSync(dumpPath) && statSync(dumpPath).size > 0;
       let adminUsername = 'admin';
+      let dbImportError: string | null = null;
       if (hasDump) {
         const dbSpin2 = spinner('Importing database...');
         dbSpin2.start();
@@ -639,7 +660,7 @@ export function registerLocalCommand(program: Command): void {
           );
 
           // Import directly via better-sqlite3 (no external sqlite3 CLI needed)
-          const db = new Database(sqliteDbPath);
+          const db = new (loadSqlite())(sqliteDbPath);
           try {
             db.exec(sqliteSql);
 
@@ -707,6 +728,7 @@ export function registerLocalCommand(program: Command): void {
             db.close();
           }
         } catch (err: any) {
+          dbImportError = err.message;
           dbSpin2.fail('Database import failed: ' + err.message);
         }
       }
@@ -737,8 +759,16 @@ export function registerLocalCommand(program: Command): void {
       writeFileSync(join(muDir, '0-suppress-errors.php'),
         "<?php\nerror_reporting(E_ERROR | E_PARSE);\n@ini_set('display_errors', '0');\n");
 
+      // Never report a plain success when the site came across without its content.
+      const header = dbImportError
+        ? `${chalk.bold.yellow('Clone complete — but the database was NOT imported.')}
+  ${chalk.yellow("The local site won't have the cloud site's posts, pages or settings.")}
+  ${chalk.dim('Reason:')} ${dbImportError}
+`
+        : chalk.bold.green('Clone complete!');
+
       console.log(`
-${chalk.bold.green('Clone complete!')}
+${header}
 
   ${chalk.dim('Name:')}        ${name}
   ${chalk.dim('PHP:')}         ${instance.php}
@@ -791,7 +821,7 @@ async function pushDatabase(instance: LocalInstance, site: any, conn: SshConnect
   // Authoritative local URL from the DB (handles port drift); cloud URL from the site.
   let fromUrl = `http://127.0.0.1:${instance.port}`;
   try {
-    const ldb = new Database(sqlitePath, { readonly: true });
+    const ldb = new (loadSqlite())(sqlitePath, { readonly: true });
     try {
       const row = ldb.prepare("SELECT option_value AS v FROM wp_options WHERE option_name='siteurl'").get() as { v?: string } | undefined;
       if (row?.v) fromUrl = String(row.v).replace(/\/+$/, '');
