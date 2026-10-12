@@ -357,15 +357,56 @@ export async function startServerBackground(
   throw new Error(`Server did not become ready within 120s. Check ${logFile}`);
 }
 
-export function stopServer(instance: LocalInstance): boolean {
-  const pidFile = join(instance.path, 'server.pid');
-  if (!existsSync(pidFile)) return false;
-
+/** Reads server.pid; null when absent or not a usable pid (never 0/1 — `kill(-0)` is our own group). */
+function readServerPid(pidFile: string): number | null {
+  if (!existsSync(pidFile)) return null;
   const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
+  return Number.isInteger(pid) && pid > 1 ? pid : null;
+}
+
+/**
+ * Signals the whole server tree, not just the recorded pid. The recorded pid is
+ * whatever we spawned — under the npx fallback that is the npx wrapper, and the
+ * Playground server is its CHILD, which survives a SIGTERM to the wrapper and
+ * keeps the port bound (EADDRINUSE on the next `local start`). The server is
+ * spawned `detached`, so on POSIX the recorded pid leads its own process group
+ * and `kill(-pid)` reaches every process in it. Windows has no groups: taskkill /T.
+ * Returns false when nothing was left to signal.
+ */
+function signalServerTree(pid: number, signal: NodeJS.Signals | 0): boolean {
+  if (process.platform === 'win32') {
+    if (signal === 0) {
+      try { process.kill(pid, 0); return true; } catch { return false; }
+    }
+    return spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).status === 0;
+  }
   try {
-    process.kill(pid, 'SIGTERM');
+    process.kill(-pid, signal);
+    return true;
   } catch {
-    // Already dead
+    // Not a group leader (pid file from something we did not spawn detached) — the pid alone.
+    try { process.kill(pid, signal); return true; } catch { return false; }
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+export function stopServer(instance: LocalInstance, graceMs = 5000): boolean {
+  const pidFile = join(instance.path, 'server.pid');
+  const pid = readServerPid(pidFile);
+  if (pid === null) {
+    rmSync(pidFile, { force: true });
+    return false;
+  }
+
+  if (signalServerTree(pid, 'SIGTERM')) {
+    // Wait for the tree to exit so an immediate `local start` finds the port free;
+    // escalate if Playground ignores SIGTERM.
+    const deadline = Date.now() + graceMs;
+    while (signalServerTree(pid, 0) && Date.now() < deadline) sleepSync(100);
+    if (signalServerTree(pid, 0)) signalServerTree(pid, 'SIGKILL');
   }
   rmSync(pidFile, { force: true });
   return true;
@@ -373,13 +414,10 @@ export function stopServer(instance: LocalInstance): boolean {
 
 export function isServerRunning(instance: LocalInstance): boolean {
   const pidFile = join(instance.path, 'server.pid');
-  if (!existsSync(pidFile)) return false;
-  const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    rmSync(pidFile, { force: true });
-    return false;
-  }
+  const pid = readServerPid(pidFile);
+  // Group liveness: a server orphaned by its npx wrapper still counts as running,
+  // so `local stop` can still reach it instead of the pid file being discarded.
+  if (pid !== null && signalServerTree(pid, 0)) return true;
+  rmSync(pidFile, { force: true });
+  return false;
 }

@@ -170,7 +170,7 @@ The standalone-CLI replacement for the plugin's `wp instawp local push`. Mirrors
 ### Background mode
 - `--background` flag spawns detached process, polls until server responds, returns immediately
 - PID stored at `<instance>/server.pid`, logs at `<instance>/server.log`
-- `local stop` kills the background process
+- `local stop` kills the server's whole **process group** (`kill(-pid)`; Windows `taskkill /T`), not just the recorded pid — under the npx fallback that pid is the npx wrapper and Playground is its child. Waits ≤5s for exit, then SIGKILL
 - `local list` shows `running`/`stopped` status
 
 ### SSH key management

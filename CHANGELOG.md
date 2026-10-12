@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed — `local stop` left the server running when Playground ran via npx
+
+Without a global `@wp-playground/cli`, `instawp local stop` printed "Stopped" but the site kept serving, and the next `local start` failed with `EADDRINUSE`.
+
+- The CLI recorded the pid of the `npx` wrapper and signalled only that; the Playground server is the wrapper's child and survived. `local stop` now stops the server's whole process group (Windows: `taskkill /T`), waits up to 5s for it to exit so the port is free when it returns, and force-kills it if it ignores SIGTERM.
+- `local list` reports a site whose wrapper died but whose server is still up as `running`, so `local stop` can still reach it (it used to show `stopped` and forget the pid).
+- A corrupt `server.pid` (`0`, `1`, non-numeric) is now discarded. Before, a `0` made `local stop` signal the CLI's own process group.
+
 ## 0.0.1-beta.34 (2026-10-09)
 
 ### Fixed — `npm install -g @instawp/cli` fails on Windows with Node 24+
