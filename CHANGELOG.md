@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.0.1-beta.36 (2026-10-13)
+
+### Fixed — `instawp logs` reported "No readable log found" when the log existed
+
+`instawp logs <site> --wp` (also `--php`, `--nginx`) could say "No readable wp log found on remote host" even though the file was there and readable.
+
+- The CLI found the log paths by having the server print `<kind><TAB><path>` with `echo`. The remote login shell is bash, whose `echo` prints `\t` literally instead of a tab, so the CLI could not read the reply and resolved no log at all.
+- It now uses `printf`, which prints a real tab in bash, sh and dash, and quotes the path. The tests run the generated script under all three shells.
+
 ## 0.0.1-beta.35 (2026-10-12)
 
 **First npm release since 0.0.1-beta.33.** The 0.0.1-beta.34 tag exists on GitHub but never reached npm (its publish was rejected — see below), so this release also ships everything listed under 0.0.1-beta.34: the Windows / Node 24+ install fix.
